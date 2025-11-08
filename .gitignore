@@ -1,0 +1,62 @@
+# ============================================
+# Pt-Sn-O Workflow Git 忽略规则
+# ============================================
+
+# 数据文件夹（太大，不纳入版本管理）
+data/
+
+# VS Code 本地历史
+.history/
+
+# Python 编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# ============================================
+# 结果文件夹（大部分忽略，保留关键汇总）
+# ============================================
+results/
+
+# 但保留以下关键汇总文件（取消忽略）
+!results/*.csv
+!results/*.txt
+!results/README.md
+
+# 保留热容分析结果摘要
+!results/adaptive_heat_capacity/adaptive_heat_capacity_summary.csv
+!results/energy_analysis_v2/heat_capacity_per_system.csv
+!results/energy_analysis_v2/melting_temperatures.csv
+
+# ============================================
+# 忽略所有图片（太大）
+# ============================================
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# ============================================
+# 编辑器和系统文件
+# ============================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+*~

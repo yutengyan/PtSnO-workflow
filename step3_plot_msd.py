@@ -1,0 +1,693 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+绘制MSD曲线 - 高速版 (文件路径缓存)
+========================================
+
+性能优化:
+1. 一次性构建文件索引 (避免重复rglob)
+2. 缓存文件路径映射
+3. 合并两次遍历为一次
+
+预计速度提升: 10-20倍
+"""
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
+from datetime import datetime
+import re
+import warnings
+from collections import defaultdict
+from tqdm import tqdm
+warnings.filterwarnings('ignore')
+
+# ===== 全局配置 =====
+BASE_DIR = Path(__file__).parent  # workflow目录
+RESULTS_CSV = BASE_DIR / 'results' / 'ensemble_analysis_results.csv'
+FILTERED_CSV = BASE_DIR / 'results' / 'ensemble_analysis_filtered.csv'  # 鏂板: 琚瓫閫塺uns鐨勭粨鏋?
+OUTLIERS_CSV = BASE_DIR / 'results' / 'large_D_outliers.csv'
+
+GMX_DATA_DIRS = [
+    BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
+    BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected'
+]
+
+OUTPUT_DIR = BASE_DIR / 'results' / 'msd_curves'
+OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
+
+# ===== 系统过滤配置 (可选) =====
+# 如果为空列表,则绘制所有系统
+# 如果指定模式,则只绘制匹配的系统
+SYSTEM_FILTER = {
+    'include_patterns': [
+        # 示例: 只绘制Pt8相关系统
+        r'^pt8',           # pt8开头的所有系统
+        # r'pt8sn\d+',       # pt8sn0, pt8sn1, ..., pt8sn10
+        # r'pt\d+sn\d+',     # 所有ptXsnY格式
+    ],
+    'exclude_patterns': [
+        # 示例: 排除含氧系统
+        # r'^[Oo]\d+',       # O1, O2, o3, o4等开头
+        # r'[Oo]\d+Pt',      # O2Pt4Sn6等
+        # r'Pt\d+Sn\d+O',    # Pt2Sn2O1等
+    ]
+}
+
+COLORS = {
+    'Pt': '#E74C3C',
+    'Sn': '#3498DB',
+    'PtSn': '#2ECC71'
+}
+
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
+
+def load_large_D_outliers():
+    """
+    加载大D值异常run清单
+    
+    Returns:
+    --------
+    outliers : set
+        异常文件路径集合
+    """
+    try:
+        df_outliers = pd.read_csv(OUTLIERS_CSV)
+        outlier_files = set(df_outliers['filepath'].values)
+        print(f"   [OK] Loaded outlier list: {len(outlier_files)} files")
+        print(f"        (These runs will be excluded from plotting)")
+        return outlier_files
+    except FileNotFoundError:
+        print(f"   [!] Outlier file not found: {OUTLIERS_CSV}")
+        print(f"   [!] Will plot all runs without filtering")
+        return set()
+
+
+def build_file_index(outlier_files=None):
+    """
+    构建文件索引 - 一次性扫描所有文件,分别索引有效runs和被筛选runs
+    
+    Parameters:
+    -----------
+    outlier_files : set, optional
+        异常文件路径集合
+    
+    Returns:
+    --------
+    file_index : dict
+        {(composition, temperature, element): [file_path1, file_path2, ...]} - 有效runs
+    file_index_filtered : dict
+        {(composition, temperature, element): [file_path1, file_path2, ...]} - 被筛选runs
+    filter_stats : dict
+        {(composition, temperature, element): {'total': int, 'kept': int, 'filtered': int}}
+    """
+    if outlier_files is None:
+        outlier_files = set()
+    
+    print("\n[*] Building file index...")
+    file_index = defaultdict(list)
+    file_index_filtered = defaultdict(list)  # 新增: 被筛选runs的索引
+    filter_stats = defaultdict(lambda: {'total': 0, 'kept': 0, 'filtered': 0})
+    
+    total_files = 0
+    filtered_files = 0
+    
+    for gmx_dir in GMX_DATA_DIRS:
+        print(f"  Scanning: {gmx_dir.name}...")
+        
+        # 查找所有MSD .xvg文件
+        for xvg_file in gmx_dir.rglob("*_msd_*.xvg"):
+            try:
+                # 解析路径: 从父目录层级提取信息
+                parts = xvg_file.parts
+                
+                # 提取element (从文件名)
+                filename = xvg_file.stem  # T1000.r7.gpu0_msd_Pt
+                if '_msd_' in filename:
+                    element = filename.split('_msd_')[-1]  # Pt, Sn, PtSn
+                else:
+                    continue
+                
+                # 提取temperature和composition (从路径向上查找)
+                temperature = None
+                composition = None
+                for i in range(len(parts)-1, 0, -1):
+                    if parts[i].endswith('K'):
+                        temperature = parts[i]
+                        composition = parts[i-1]
+                        break
+                
+                if not temperature or not composition:
+                    continue
+                
+                key = (composition, temperature, element)
+                filter_stats[key]['total'] += 1
+                total_files += 1
+                
+                # 检查是否是异常run
+                if str(xvg_file) in outlier_files:
+                    filter_stats[key]['filtered'] += 1
+                    file_index_filtered[key].append(xvg_file)  # 添加到筛选索引
+                    filtered_files += 1
+                else:
+                    filter_stats[key]['kept'] += 1
+                    file_index[key].append(xvg_file)
+                
+            except Exception as e:
+                continue
+    
+    print(f"   [OK] Indexed {total_files - filtered_files} valid files")
+    print(f"   [OK] Indexed {filtered_files} filtered files")
+    print(f"   [OK] Filtered out {filtered_files} outlier runs")
+    
+    return file_index, file_index_filtered, filter_stats
+
+
+def extract_base_system(composition_name):
+    """提取基础体系名称"""
+    match = re.match(r'^(Cv)-\d+$', composition_name)
+    if match:
+        return match.group(1)
+    return composition_name
+
+
+def group_compositions_by_system(df):
+    """按体系分组"""
+    df['base_system'] = df['composition'].apply(extract_base_system)
+    
+    system_groups = {}
+    for base_sys in df['base_system'].unique():
+        comps = df[df['base_system'] == base_sys]['composition'].unique()
+        system_groups[base_sys] = sorted(comps)
+    
+    return system_groups
+
+
+def filter_systems(system_groups, include_patterns=None, exclude_patterns=None):
+    """
+    根据正则表达式模式过滤系统
+    
+    Parameters:
+    -----------
+    system_groups : dict
+        {base_system: [compositions]}
+    include_patterns : list of str
+        包含模式列表 (正则表达式)
+        如果为空,则包含所有系统
+    exclude_patterns : list of str
+        排除模式列表 (正则表达式)
+    
+    Returns:
+    --------
+    filtered_groups : dict
+        过滤后的系统字典
+    """
+    if include_patterns is None:
+        include_patterns = []
+    if exclude_patterns is None:
+        exclude_patterns = []
+    
+    filtered_groups = {}
+    
+    for base_sys, comps in system_groups.items():
+        # 检查是否匹配include模式
+        if include_patterns:
+            included = any(re.search(pattern, base_sys, re.IGNORECASE) 
+                          for pattern in include_patterns)
+            if not included:
+                continue
+        
+        # 检查是否匹配exclude模式
+        if exclude_patterns:
+            excluded = any(re.search(pattern, base_sys, re.IGNORECASE) 
+                          for pattern in exclude_patterns)
+            if excluded:
+                continue
+        
+        # 通过过滤
+        filtered_groups[base_sys] = comps
+    
+    return filtered_groups
+
+
+def read_gmx_msd_xvg(filepath):
+    """读取GMX MSD .xvg文件"""
+    time_data = []
+    msd_data = []
+    
+    try:
+        with open(filepath, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or line.startswith('@'):
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        t = float(parts[0])
+                        msd_nm2 = float(parts[1])
+                        msd_a2 = msd_nm2 * 100
+                        time_data.append(t)
+                        msd_data.append(msd_a2)
+                    except ValueError:
+                        continue
+    except:
+        return None, None
+    
+    if len(time_data) == 0:
+        return None, None
+    
+    return np.array(time_data), np.array(msd_data)
+
+
+def plot_system_all_temps_fast(base_system, compositions, df_all, file_index, file_index_filtered, filter_stats, max_temps=None):
+    """
+    快速绘制 - 使用文件索引,同时绘制有效runs和被筛选runs
+    
+    Parameters:
+    -----------
+    base_system : str
+        基础体系名称
+    compositions : list
+        组成列表
+    df_all : DataFrame
+        所有数据
+    file_index : dict
+        有效runs的文件索引
+    file_index_filtered : dict
+        被筛选runs的文件索引
+    filter_stats : dict
+        筛选统计
+    max_temps : int, optional
+        最大温度数
+    """
+    
+    print(f"\n{'='*80}")
+    print(f"System: {base_system}")
+    if len(compositions) > 1:
+        print(f"Compositions: {', '.join(compositions)}")
+    print(f"{'='*80}")
+    
+    df_sys = df_all[df_all['composition'].isin(compositions)]
+    
+    if len(df_sys) == 0:
+        print(f"[X] No data")
+        return
+    
+    temperatures = sorted(df_sys['temperature'].unique(),
+                         key=lambda x: int(x.replace('K', '')))
+    
+    print(f"Data points: {len(df_sys)}")
+    print(f"Temperatures: {len(temperatures)} - {temperatures}")
+    
+    if max_temps and len(temperatures) > max_temps:
+        indices = np.linspace(0, len(temperatures)-1, max_temps, dtype=int)
+        temperatures = [temperatures[i] for i in indices]
+    
+    n_temps = len(temperatures)
+    n_cols = min(3, n_temps)
+    n_rows = (n_temps + n_cols - 1) // n_cols
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(7*n_cols, 5*n_rows))
+    if n_temps == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+    
+    # 一次性读取所有数据 + 找最大值
+    print("\n[*] Loading MSD data...")
+    
+    msd_cache = {}  # {(temp, element): [(time, msd), ...]} - 有效runs
+    msd_cache_filtered = {}  # {(temp, element): [(time, msd), ...]} - 被筛选runs
+    global_max_msd = 0
+    
+    # 统计每个温度的筛选情况
+    temp_filter_stats = {}  # {temp: {'total': int, 'kept': int, 'filtered': int}}
+    
+    for temp in temperatures:
+        temp_stats = {'total': 0, 'kept': 0, 'filtered': 0}
+        
+        for element in ['Pt', 'Sn', 'PtSn']:
+            msd_list = []
+            msd_list_filtered = []
+            
+            # 从索引查找文件
+            for comp in compositions:
+                key = (comp, temp, element)
+                
+                # 累加统计
+                if key in filter_stats:
+                    temp_stats['total'] += filter_stats[key]['total']
+                    temp_stats['kept'] += filter_stats[key]['kept']
+                    temp_stats['filtered'] += filter_stats[key]['filtered']
+                
+                # 读取有效runs
+                files = file_index.get(key, [])
+                for filepath in files:
+                    time, msd = read_gmx_msd_xvg(filepath)
+                    if time is not None:
+                        msd_list.append((time, msd))
+                        
+                        # 更新全局最大值
+                        max_val = np.max(msd)
+                        if max_val > global_max_msd:
+                            global_max_msd = max_val
+                
+                # 读取被筛选runs
+                files_filtered = file_index_filtered.get(key, [])
+                for filepath in files_filtered:
+                    time, msd = read_gmx_msd_xvg(filepath)
+                    if time is not None:
+                        msd_list_filtered.append((time, msd))
+                        
+                        # 更新全局最大值
+                        max_val = np.max(msd)
+                        if max_val > global_max_msd:
+                            global_max_msd = max_val
+            
+            if msd_list:
+                msd_cache[(temp, element)] = msd_list
+            if msd_list_filtered:
+                msd_cache_filtered[(temp, element)] = msd_list_filtered
+        
+        temp_filter_stats[temp] = temp_stats
+    
+    total_curves = sum(len(v) for v in msd_cache.values())
+    total_curves_filt = sum(len(v) for v in msd_cache_filtered.values())
+    print(f"  [OK] Loaded {total_curves} valid curves + {total_curves_filt} filtered curves")
+    print(f"  [OK] Global max MSD: {global_max_msd:.2f} A^2")
+    
+    # 绘制
+    print("\n[*] Plotting...")
+    
+    for idx, temp in enumerate(temperatures):
+        ax = axes[idx]
+        has_data = False
+        
+        # 获取该温度的筛选统计
+        stats = temp_filter_stats.get(temp, {'total': 0, 'kept': 0, 'filtered': 0})
+        
+        # === 绘制有效runs (实线,饱和颜色) ===
+        for element in ['Pt', 'Sn', 'PtSn']:
+            msd_list = msd_cache.get((temp, element), [])
+            
+            if not msd_list:
+                continue
+            
+            # 对齐时间轴
+            all_times = [t for t, m in msd_list]
+            min_time = max(t.min() for t in all_times)
+            max_time = min(t.max() for t in all_times)
+            common_time = np.linspace(min_time, max_time, 500)
+            
+            # 插值
+            msd_interp_list = []
+            for time, msd in msd_list:
+                try:
+                    msd_interp = np.interp(common_time, time, msd)
+                    msd_interp_list.append(msd_interp)
+                    
+                    # 透明单次 (有效runs)
+                    ax.plot(common_time, msd_interp, alpha=0.2, linewidth=1,
+                           color=COLORS[element], zorder=1)
+                except:
+                    continue
+            
+            if not msd_interp_list:
+                continue
+            
+            # 集合平均 (有效runs)
+            if len(msd_interp_list) >= 2:
+                msd_array = np.array(msd_interp_list)
+                msd_mean = np.mean(msd_array, axis=0)
+                msd_std = np.std(msd_array, axis=0, ddof=1)
+                
+                ax.plot(common_time, msd_mean, '-', linewidth=3,
+                       color=COLORS[element],
+                       label=f'{element} Valid (n={len(msd_interp_list)})', zorder=10)
+                
+                ax.fill_between(common_time, msd_mean - msd_std, msd_mean + msd_std,
+                               alpha=0.2, color=COLORS[element], zorder=5)
+            else:
+                ax.plot(common_time, msd_interp_list[0], '-', linewidth=3,
+                       color=COLORS[element],
+                       label=f'{element} Valid (n=1)', zorder=10)
+            
+            has_data = True
+        
+        # === 绘制被筛选runs (虚线,灰色) ===
+        for element in ['Pt', 'Sn', 'PtSn']:
+            msd_list_filt = msd_cache_filtered.get((temp, element), [])
+            
+            if not msd_list_filt:
+                continue
+            
+            # 对齐时间轴
+            all_times_filt = [t for t, m in msd_list_filt]
+            min_time_filt = max(t.min() for t in all_times_filt)
+            max_time_filt = min(t.max() for t in all_times_filt)
+            common_time_filt = np.linspace(min_time_filt, max_time_filt, 500)
+            
+            # 插值
+            msd_interp_list_filt = []
+            for time, msd in msd_list_filt:
+                try:
+                    msd_interp = np.interp(common_time_filt, time, msd)
+                    msd_interp_list_filt.append(msd_interp)
+                    
+                    # 透明单次 (被筛选runs - 灰色虚线)
+                    ax.plot(common_time_filt, msd_interp, '--', alpha=0.15, linewidth=1,
+                           color='gray', zorder=0.5)
+                except:
+                    continue
+            
+            if not msd_interp_list_filt:
+                continue
+            
+            # 集合平均 (被筛选runs - 深灰色虚线)
+            if len(msd_interp_list_filt) >= 1:
+                msd_array_filt = np.array(msd_interp_list_filt)
+                msd_mean_filt = np.mean(msd_array_filt, axis=0)
+                
+                ax.plot(common_time_filt, msd_mean_filt, '--', linewidth=2.5,
+                       color='dimgray', alpha=0.6,
+                       label=f'{element} Filtered (n={len(msd_interp_list_filt)})', zorder=8)
+            
+            has_data = True
+        
+        if not has_data:
+            ax.text(0.5, 0.5, 'No Data', ha='center', va='center',
+                   transform=ax.transAxes, fontsize=14)
+        
+        # 添加筛选信息到标题
+        if stats['total'] > 0:
+            filter_text = f" [{stats['kept']}/{stats['total']} runs]"
+            if stats['filtered'] > 0:
+                title_text = f"{temp}{filter_text}"
+                title_color = 'darkred' if stats['filtered'] > stats['total'] * 0.3 else 'black'
+            else:
+                title_text = f"{temp}{filter_text}"
+                title_color = 'black'
+        else:
+            title_text = f"{temp}"
+            title_color = 'black'
+        
+        ax.set_xlabel('Time (ps)', fontsize=11, fontweight='bold')
+        ax.set_ylabel('MSD (A^2)', fontsize=11, fontweight='bold')
+        ax.set_title(title_text, fontsize=12, fontweight='bold', color=title_color)
+        ax.legend(loc='upper left', fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+        
+        if global_max_msd > 0:
+            ax.set_ylim(0, global_max_msd * 1.1)
+    
+    for idx in range(n_temps, len(axes)):
+        axes[idx].axis('off')
+    
+    title_text = f'{base_system} - MSD Curves\n'
+    if len(compositions) > 1:
+        title_text += f'Combined: {", ".join(compositions)}\n'
+    title_text += 'Thick: Average | Shaded: ±1σ | Thin: Individual | Y-axis unified'
+    
+    fig.suptitle(title_text, fontsize=14, fontweight='bold', y=0.995)
+    
+    # 使用try-except避免tight_layout错误
+    try:
+        plt.tight_layout(rect=[0, 0, 1, 0.99])
+    except Exception as e:
+        print(f"  [!] Warning: tight_layout failed ({e}), continuing...")
+    
+    output_file = OUTPUT_DIR / f'{base_system}_all_temps_GMX.png'
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    print(f"  [OK] Saved: {output_file.name}")
+    print(f"{'='*80}\n")
+
+
+def main():
+    print("\n" + "="*80)
+    print("MSD Curves - Fast Version (with file indexing + outlier filtering)")
+    print("="*80)
+    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*80)
+    
+    # 0. 加载异常清单
+    print("\n[0/6] Loading outlier list...")
+    outlier_files = load_large_D_outliers()
+    
+    # 1. 构建文件索引 (一次性,分别索引有效runs和被筛选runs)
+    file_index, file_index_filtered, filter_stats = build_file_index(outlier_files)
+    
+    # 2. 读取分析结果
+    if not RESULTS_CSV.exists():
+        print(f"\n[X] Error: {RESULTS_CSV}")
+        return
+    
+    df = pd.read_csv(RESULTS_CSV)
+    
+    # 3. 按体系分组
+    system_groups = group_compositions_by_system(df)
+    
+    print(f"\n[*] Systems identified: {len(system_groups)}")
+    
+    # 4. 应用系统过滤
+    include_patterns = SYSTEM_FILTER.get('include_patterns', [])
+    exclude_patterns = SYSTEM_FILTER.get('exclude_patterns', [])
+    
+    if include_patterns or exclude_patterns:
+        print(f"\n[*] Applying system filters...")
+        if include_patterns:
+            print(f"    Include patterns: {include_patterns}")
+        if exclude_patterns:
+            print(f"    Exclude patterns: {exclude_patterns}")
+        
+        system_groups = filter_systems(system_groups, include_patterns, exclude_patterns)
+        print(f"    Filtered: {len(system_groups)} systems selected")
+    
+    print(f"[*] Output dir: {OUTPUT_DIR}")
+    
+    print("\nSystem list:")
+    for i, (base_sys, comps) in enumerate(sorted(system_groups.items()), 1):
+        n_points = len(df[df['composition'].isin(comps)])
+        if len(comps) > 1:
+            print(f"  {i:2d}. {base_sys:30s} ({n_points:3d} pts) <- {len(comps)} comps")
+        else:
+            print(f"  {i:2d}. {base_sys:30s} ({n_points:3d} pts)")
+    
+    print("\n" + "="*80)
+    print("Start plotting...")
+    print("="*80)
+    
+    success = 0
+    failed = []
+    
+    for idx, (base_sys, comps) in enumerate(sorted(system_groups.items()), 1):
+        print(f"\n[{idx}/{len(system_groups)}] {base_sys}...")
+        
+        try:
+            plot_system_all_temps_fast(base_sys, comps, df, file_index, file_index_filtered, filter_stats, max_temps=None)
+            success += 1
+        except Exception as e:
+            print(f"[X] Failed: {e}")
+            import traceback
+            traceback.print_exc()
+            failed.append((base_sys, str(e)))
+    
+    print("\n" + "="*80)
+    print("DONE!")
+    print("="*80)
+    print(f"Expected: {len(system_groups)}")
+    print(f"Success:  {success}")
+    print(f"Failed:   {len(failed)}")
+    
+    if failed:
+        print("\nFailed systems:")
+        for sys, err in failed:
+            print(f"  - {sys}: {err}")
+    
+    print(f"\nOutput: {OUTPUT_DIR}")
+    print("="*80)
+    
+    # 生成筛选统计报告
+    print("\n[*] Generating filtering statistics report...")
+    generate_filter_report(filter_stats, OUTPUT_DIR)
+
+
+def generate_filter_report(filter_stats, output_dir):
+    """生成筛选统计报告"""
+    report_file = output_dir / 'filtering_statistics.txt'
+    
+    # 按体系和温度分组统计
+    system_stats = defaultdict(lambda: defaultdict(lambda: {'total': 0, 'kept': 0, 'filtered': 0}))
+    
+    for (comp, temp, elem), stats in filter_stats.items():
+        # 提取基础体系名称
+        base_sys = extract_base_system(comp)
+        system_stats[base_sys][temp]['total'] += stats['total']
+        system_stats[base_sys][temp]['kept'] += stats['kept']
+        system_stats[base_sys][temp]['filtered'] += stats['filtered']
+    
+    with open(report_file, 'w', encoding='utf-8') as f:
+        f.write("="*80 + "\n")
+        f.write("Step1 Filtering Statistics - By System and Temperature\n")
+        f.write("="*80 + "\n")
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("="*80 + "\n\n")
+        
+        # 总体统计
+        total_runs = sum(s['total'] for stats in filter_stats.values() for s in [stats])
+        kept_runs = sum(s['kept'] for stats in filter_stats.values() for s in [stats])
+        filtered_runs = sum(s['filtered'] for stats in filter_stats.values() for s in [stats])
+        
+        f.write("Overall Statistics:\n")
+        f.write(f"  Total runs:    {total_runs}\n")
+        if total_runs > 0:
+            f.write(f"  Kept runs:     {kept_runs} ({kept_runs/total_runs*100:.1f}%)\n")
+            f.write(f"  Filtered runs: {filtered_runs} ({filtered_runs/total_runs*100:.1f}%)\n")
+        else:
+            f.write(f"  Kept runs:     {kept_runs}\n")
+            f.write(f"  Filtered runs: {filtered_runs}\n")
+        f.write("\n" + "="*80 + "\n\n")
+        
+        # 按体系详细统计
+        for base_sys in sorted(system_stats.keys()):
+            temps = system_stats[base_sys]
+            
+            f.write(f"System: {base_sys}\n")
+            f.write("-"*80 + "\n")
+            f.write(f"{'Temperature':<15} {'Total':<10} {'Kept':<10} {'Filtered':<12} {'Rate':<10}\n")
+            f.write("-"*80 + "\n")
+            
+            for temp in sorted(temps.keys(), key=lambda x: int(x.replace('K', ''))):
+                stats = temps[temp]
+                if stats['total'] > 0:
+                    rate = stats['kept'] / stats['total'] * 100
+                    f.write(f"{temp:<15} {stats['total']:<10} {stats['kept']:<10} "
+                           f"{stats['filtered']:<12} {rate:>6.1f}%\n")
+            
+            # 体系总计
+            sys_total = sum(s['total'] for s in temps.values())
+            sys_kept = sum(s['kept'] for s in temps.values())
+            sys_filtered = sum(s['filtered'] for s in temps.values())
+            sys_rate = sys_kept / sys_total * 100 if sys_total > 0 else 0
+            
+            f.write("-"*80 + "\n")
+            f.write(f"{'Total':<15} {sys_total:<10} {sys_kept:<10} "
+                   f"{sys_filtered:<12} {sys_rate:>6.1f}%\n")
+            f.write("\n")
+        
+        f.write("="*80 + "\n")
+        f.write("Note: [Kept/Total runs] shown in each subplot title\n")
+        f.write("      Red title = >30% filtered\n")
+        f.write("="*80 + "\n")
+    
+    print(f"  [OK] Saved: {report_file.name}")
+
+
+if __name__ == '__main__':
+    main()
