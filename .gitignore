@@ -21,27 +21,17 @@ env/
 ENV/
 
 # ============================================
-# 结果文件夹（大部分忽略，保留关键汇总）
+# 结果文件夹（提交所有内容）
 # ============================================
-results/
-
-# 但保留以下关键汇总文件（取消忽略）
-!results/*.csv
-!results/*.txt
-!results/README.md
-
-# 保留热容分析结果摘要
-!results/adaptive_heat_capacity/adaptive_heat_capacity_summary.csv
-!results/energy_analysis_v2/heat_capacity_per_system.csv
-!results/energy_analysis_v2/melting_temperatures.csv
+# results/ 文件夹会被完全追踪
 
 # ============================================
-# 忽略所有图片（太大）
+# 忽略所有图片（太大，但如果需要也可以注释掉）
 # ============================================
-*.png
-*.jpg
-*.jpeg
-*.pdf
+# *.png
+# *.jpg
+# *.jpeg
+# *.pdf
 
 # ============================================
 # 编辑器和系统文件
