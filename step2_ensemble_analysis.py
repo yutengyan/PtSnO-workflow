@@ -63,7 +63,9 @@ BASE_DIR = Path(__file__).parent
 # 数据源目录
 GMX_DATA_DIRS = [
     BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
-    BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected'
+    BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected',
+    # 新版unwrap per-atom MSD数据 (2025-11-18)
+    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614'
 ]
 
 # 输出目录
@@ -283,9 +285,10 @@ def main():
     print("\n[0/5] 加载大D值异常清单...")
     large_D_outliers = load_large_D_outliers()
     
-    # 步骤1: 收集文件
+    # 步骤1: 收集文件 (带去重)
     print("\n[1/5] 收集GMX MSD文件...")
     all_files = []
+    seen_files = set()  # 用于去重的集合
     for data_dir in GMX_DATA_DIRS:
         gmx_dir = Path(data_dir)
         if not gmx_dir.exists():
@@ -293,10 +296,27 @@ def main():
             continue
         
         files_in_dir = list(gmx_dir.rglob('*_msd_*.xvg'))
-        print(f"  {gmx_dir.name}: {len(files_in_dir)} 文件")
-        all_files.extend(files_in_dir)
+        # 去重: 使用相对于BASE_DIR的规范化路径
+        unique_count = 0
+        duplicate_count = 0
+        for f in files_in_dir:
+            try:
+                # 获取规范化的绝对路径
+                normalized_path = f.resolve()
+                if normalized_path not in seen_files:
+                    seen_files.add(normalized_path)
+                    all_files.append(f)
+                    unique_count += 1
+                else:
+                    duplicate_count += 1
+            except:
+                # 如果resolve()失败,仍然添加
+                all_files.append(f)
+                unique_count += 1
+        
+        print(f"  {gmx_dir.name}: {len(files_in_dir)} 文件 ({unique_count} 唯一, {duplicate_count} 重复)")
     
-    print(f"\n   总计: {len(all_files)} 文件")
+    print(f"\n   总计: {len(all_files)} 文件 (已去重)")
     
     # 步骤2: 解析和分组
     print("\n[2/5] 解析文件信息...")

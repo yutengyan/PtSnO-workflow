@@ -38,7 +38,9 @@ OUTLIERS_CSV = BASE_DIR / 'results' / 'large_D_outliers.csv'
 
 GMX_DATA_DIRS = [
     BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
-    BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected'
+    BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected',
+    # 新版unwrap per-atom MSD数据 (2025-11-18)
+    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614'
 ]
 
 OUTPUT_DIR = BASE_DIR / 'results' / 'ensemble_D_analysis'
@@ -106,11 +108,20 @@ def build_file_index(outlier_files=None):
     
     total_files = 0
     filtered_files = 0
+    seen_files = set()  # 用于去重
     
     for gmx_dir in GMX_DATA_DIRS:
         print(f"  Scanning: {gmx_dir.name}...")
         
         for xvg_file in gmx_dir.rglob("*_msd_*.xvg"):
+            # 去重检查
+            try:
+                normalized_path = xvg_file.resolve()
+                if normalized_path in seen_files:
+                    continue  # 跳过重复文件
+                seen_files.add(normalized_path)
+            except:
+                pass  # 如果resolve()失败,继续处理
             try:
                 parts = xvg_file.parts
                 

@@ -79,8 +79,7 @@ plt.rcParams['font.size'] = 10
 
 # GMX数据目录
 GMX_DATA_DIRS = [
-    BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
-    BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected'
+    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614'  # ✨ 新版 unwrap per-atom
 ]
 
 # 异常检测参数
