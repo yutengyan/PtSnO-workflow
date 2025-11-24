@@ -65,15 +65,16 @@ v1.1 (2025-10-21):
    路径示例: /home/scms/jychen/.../pt8sn8-1-best/T900.r15.gpu0
 
 2. **Lindemann指数数据** (相态分类)
-   路径: data/lindemann/lindemann_master_run_*.csv (3个文件)
+   路径: data/lindemann/lin-for-all-but-every-ele/lindemann_master_run_20251113_195434.csv
    来源: MSD轨迹计算的Lindemann指数 (基于Pt-Sn距离MSD)
+   版本: v3 (2025-11-13) - 最新版本
+   对比: 与v2 (2025-11-12) 有99.9%一致性 (仅3条差异)
    列: 目录, 结构, 温度(K), Lindemann指数, 方法, 耗时(s), 时间戳
    统计: 
-     - 原始合并: 4012条 (3个CSV文件)
-     - 去重后: 3262条 (移除750条重复, 18.7%)
+     - 总记录数: 3262条
      - 筛选后: 2370条 (应用--msd-filter后)
    路径示例: /home/scms/jychen/.../pt8sn8-1-best/T900.r15.gpu0
-   注意: 去重基于(目录, 结构, 温度)三元组, 保留最新记录
+   注意: 如果最新文件不存在,将回退到旧的glob模式 lindemann_master_run_*.csv
 
 3. **Step 1 MSD异常过滤数据** (数据质量控制)
    路径: results/large_D_outliers.csv
@@ -318,7 +319,7 @@ def normalize_path(path, ...):
 上游依赖:
     - Step 1: large_D_outliers.csv (异常值筛选)
     - LAMMPS: energy_master_*.csv (能量数据)
-    - MSD分析: lindemann_master_run_*.csv (Lindemann指数)
+    - MSD分析: lindemann_master_run_20251113_195434.csv (Lindemann指数 v3)
 
 下游应用:
     - Step 7.5: 热容系统性分析
@@ -776,14 +777,23 @@ def load_lindemann_individual_runs(system_filter=None):
     """
     print(f"\n>>> Loading Lindemann individual run data")
     
-    # Find all lindemann_master_run_*.csv files
-    lindemann_files = sorted(LINDEMANN_DIR.glob('lindemann_master_run_*.csv'))
+    # Use the latest Lindemann data (version 3: 2025-11-13)
+    # This is the most up-to-date version with 99.9% consistency with version 2
+    lindemann_file = LINDEMANN_DIR / 'lin-for-all-but-every-ele' / 'lindemann_master_run_20251113_195434.csv'
     
-    if not lindemann_files:
-        print(f"    Error: No Lindemann files found in {LINDEMANN_DIR}")
-        return None
-    
-    print(f"    Found {len(lindemann_files)} files")
+    if lindemann_file.exists():
+        lindemann_files = [lindemann_file]
+        print(f"    [✓] Using latest Lindemann data (v3, 2025-11-13)")
+        print(f"    File: {lindemann_file.name}")
+    else:
+        # Fallback to old glob pattern if new file doesn't exist
+        print(f"    [!] Latest file not found: {lindemann_file}")
+        print(f"    [→] Falling back to glob pattern lindemann_master_run_*.csv")
+        lindemann_files = sorted(LINDEMANN_DIR.glob('lindemann_master_run_*.csv'))
+        if not lindemann_files:
+            print(f"    Error: No Lindemann files found in {LINDEMANN_DIR}")
+            return None
+        print(f"    Found {len(lindemann_files)} files")
     
     # Read and merge
     dfs = []
@@ -1124,7 +1134,7 @@ def generate_filtering_report(df_original, df_filtered, method1_applied, method2
         f.write("1. **Energy data**: Average cluster energy from LAMMPS MD simulations\n")
         f.write("   - Raw source: ~3262 records (energy_master_*.csv)\n")
         f.write("2. **Lindemann index data**: Calculated from MSD (Mean Square Displacement) analysis\n")
-        f.write("   - Raw source: 4012 records from 3 lindemann_master_run_*.csv files\n")
+        f.write("   - Raw source: lindemann_master_run_20251113_195434.csv (v3, 3262 records)\n")
         f.write("   - After deduplication: ~3262 unique (directory, structure, temperature) combinations\n")
         f.write("   - Note: Multiple files contain overlapping data; duplicates are removed before merging\n\n")
         f.write("**Note about MSD types**: Step 1 filtering is based on **Pt and Sn elemental MSD** ")
