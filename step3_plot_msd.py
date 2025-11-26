@@ -4,23 +4,23 @@
 Step3: 绘制MSD曲线 - 高速版 (文件索引优化)
 ========================================
 创建时间: 2025-10-16
-最后更新: 2025-11-25
+最后更新: 2025-11-26
 作者: GitHub Copilot
 
 功能:
-    1. 读取 step2 的集成分析结果 (获取系统和温度列表)
-    2. 构建原始 .xvg 文件索引
+    1. 直接扫描 GMX MSD 数据目录构建文件索引
+    2. 自动发现所有系统和温度
     3. 按系统和温度绘制MSD曲线
-    4. 支持异常值筛选 (可选)
-    5. 在 --nofilter 模式下,自动发现文件中的所有温度
+    4. 支持异常值筛选 (可选, 使用 step1_2 的 large_D_outliers.csv)
+    5. 同时显示有效runs和被筛选runs (不同样式)
 
 工作流程:
-    1. 先运行 step2 生成 ensemble_analysis_results.csv
-    2. 运行本脚本绘制MSD曲线
+    - 可独立运行,无需先运行其他脚本
+    - 如需筛选异常runs,需要 step1_2 生成的 large_D_outliers.csv
 
 依赖关系:
-    - **必须先运行 step2**: 本脚本从 step2 的输出获取系统列表
-    - 可选: step1 的异常清单用于筛选
+    - 可选: step1_2 的 large_D_outliers.csv 用于筛选异常runs
+    - 无必需依赖 (系统列表从文件直接发现)
 
 性能优化:
     1. 一次性构建文件索引 (避免重复rglob)
@@ -28,9 +28,8 @@ Step3: 绘制MSD曲线 - 高速版 (文件索引优化)
     3. 预计速度提升: 10-20倍
 
 输入:
-    - step2的输出: ensemble_analysis_results.csv (必需)
     - GMX MSD原始数据 (.xvg文件,从GMX_DATA_DIRS读取)
-    - [可选] step1的异常清单 (large_D_outliers.csv)
+    - [可选] step1_2的异常清单 (large_D_outliers.csv)
 
 输出: results/msd_curves/
     ├── {system}_all_temps_GMX.png      (各系统的MSD曲线图)
@@ -56,8 +55,11 @@ warnings.filterwarnings('ignore')
 
 # ===== 全局配置 =====
 BASE_DIR = Path(__file__).parent  # workflow目录
+
+# 数据源: step1_2 的输出结果
+# - ensemble_analysis_results.csv: 有效runs的集成平均 (用于获取系统列表)
+# - large_D_outliers.csv: 异常runs清单 (用于筛选绘图)
 RESULTS_CSV = BASE_DIR / 'results' / 'ensemble_analysis_results.csv'
-FILTERED_CSV = BASE_DIR / 'results' / 'ensemble_analysis_filtered.csv'  # 鏂板: 琚瓫閫塺uns鐨勭粨鏋?
 OUTLIERS_CSV = BASE_DIR / 'results' / 'large_D_outliers.csv'
 
 GMX_DATA_DIRS = [
@@ -632,18 +634,29 @@ def main(enable_filtering=None):
     print("="*80)
     
     # 0. 加载异常清单
-    print("\n[0/6] Loading outlier list...")
+    print("\n[0/5] Loading outlier list...")
     outlier_files = load_large_D_outliers(enable_filtering)
     
     # 1. 构建文件索引 (一次性,分别索引有效runs和被筛选runs)
     file_index, file_index_filtered, filter_stats = build_file_index(outlier_files)
     
-    # 2. 读取分析结果
-    if not RESULTS_CSV.exists():
-        print(f"\n[X] Error: {RESULTS_CSV}")
+    # 2. 从文件索引直接发现系统列表 (不再依赖 ensemble_analysis_results.csv)
+    print("\n[2/5] Discovering systems from file index...")
+    
+    # 从文件索引提取所有 (composition, temperature) 组合
+    all_compositions = set()
+    for key in list(file_index.keys()) + list(file_index_filtered.keys()):
+        comp, temp, elem = key
+        all_compositions.add(comp)
+    
+    if not all_compositions:
+        print(f"\n[X] Error: No files found in file index")
         return
     
-    df = pd.read_csv(RESULTS_CSV)
+    print(f"   [OK] Found {len(all_compositions)} compositions from files")
+    
+    # 创建一个虚拟 DataFrame 用于 group_compositions_by_system
+    df = pd.DataFrame({'composition': list(all_compositions)})
     
     # 3. 按体系分组
     system_groups = group_compositions_by_system(df)
@@ -668,11 +681,17 @@ def main(enable_filtering=None):
     
     print("\nSystem list:")
     for i, (base_sys, comps) in enumerate(sorted(system_groups.items()), 1):
-        n_points = len(df[df['composition'].isin(comps)])
+        # 统计该系统的文件数
+        n_files = 0
+        for comp in comps:
+            for key in list(file_index.keys()) + list(file_index_filtered.keys()):
+                if key[0] == str(comp):
+                    n_files += len(file_index.get(key, [])) + len(file_index_filtered.get(key, []))
+        
         if len(comps) > 1:
-            print(f"  {i:2d}. {base_sys:30s} ({n_points:3d} pts) <- {len(comps)} comps")
+            print(f"  {i:2d}. {base_sys:30s} ({n_files:3d} files) <- {len(comps)} comps")
         else:
-            print(f"  {i:2d}. {base_sys:30s} ({n_points:3d} pts)")
+            print(f"  {i:2d}. {base_sys:30s} ({n_files:3d} files)")
     
     print("\n" + "="*80)
     print("Start plotting...")
@@ -681,8 +700,8 @@ def main(enable_filtering=None):
     success = 0
     failed = []
     
-    # 如果关闭了筛选，使用文件索引的温度列表
-    use_file_temps = (enable_filtering is not None and not enable_filtering)
+    # 始终从文件索引获取温度列表 (不再依赖 CSV)
+    use_file_temps = True
     
     for idx, (base_sys, comps) in enumerate(sorted(system_groups.items()), 1):
         print(f"\n[{idx}/{len(system_groups)}] {base_sys}...")
