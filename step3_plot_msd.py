@@ -1,15 +1,45 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-绘制MSD曲线 - 高速版 (文件路径缓存)
+Step3: 绘制MSD曲线 - 高速版 (文件索引优化)
 ========================================
+创建时间: 2025-10-16
+最后更新: 2025-11-25
+作者: GitHub Copilot
+
+功能:
+    1. 读取 step2 的集成分析结果 (获取系统和温度列表)
+    2. 构建原始 .xvg 文件索引
+    3. 按系统和温度绘制MSD曲线
+    4. 支持异常值筛选 (可选)
+    5. 在 --nofilter 模式下,自动发现文件中的所有温度
+
+工作流程:
+    1. 先运行 step2 生成 ensemble_analysis_results.csv
+    2. 运行本脚本绘制MSD曲线
+
+依赖关系:
+    - **必须先运行 step2**: 本脚本从 step2 的输出获取系统列表
+    - 可选: step1 的异常清单用于筛选
 
 性能优化:
-1. 一次性构建文件索引 (避免重复rglob)
-2. 缓存文件路径映射
-3. 合并两次遍历为一次
+    1. 一次性构建文件索引 (避免重复rglob)
+    2. 缓存文件路径映射
+    3. 预计速度提升: 10-20倍
 
-预计速度提升: 10-20倍
+输入:
+    - step2的输出: ensemble_analysis_results.csv (必需)
+    - GMX MSD原始数据 (.xvg文件,从GMX_DATA_DIRS读取)
+    - [可选] step1的异常清单 (large_D_outliers.csv)
+
+输出: results/msd_curves/
+    ├── {system}_all_temps_GMX.png      (各系统的MSD曲线图)
+    └── filtering_statistics.txt        (筛选统计报告)
+
+使用方法:
+--------
+python step3_plot_msd.py              # 默认启用异常值筛选
+python step3_plot_msd.py --nofilter   # 关闭筛选，绘制所有曲线
 """
 
 import pandas as pd
@@ -21,6 +51,7 @@ import re
 import warnings
 from collections import defaultdict
 from tqdm import tqdm
+import argparse
 warnings.filterwarnings('ignore')
 
 # ===== 全局配置 =====
@@ -30,14 +61,20 @@ FILTERED_CSV = BASE_DIR / 'results' / 'ensemble_analysis_filtered.csv'  # 鏂板
 OUTLIERS_CSV = BASE_DIR / 'results' / 'large_D_outliers.csv'
 
 GMX_DATA_DIRS = [
-    BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
-    BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected',
+    # BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
+    # BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected',
     # 新版unwrap per-atom MSD数据 (2025-11-18)
-    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614'
+    # BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614',
+    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'air' / 'gmx_msd_results_20251124_170114'  # 🌬️ 气象数据
 ]
 
 OUTPUT_DIR = BASE_DIR / 'results' / 'msd_curves'
 OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
+
+# ===== 异常值筛选开关（可通过命令行参数覆盖） =====
+# 默认值：True = 启用筛选，False = 绘制所有曲线
+# 命令行：--nofilter 将覆盖此设置
+ENABLE_OUTLIER_FILTERING = True  # 默认启用筛选
 
 # ===== 系统过滤配置 (可选) =====
 # 如果为空列表,则绘制所有系统
@@ -45,9 +82,10 @@ OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
 SYSTEM_FILTER = {
     'include_patterns': [
         # 示例: 只绘制Pt8相关系统
-        r'^pt8',           # pt8开头的所有系统
+        # r'^pt8',           # pt8开头的所有系统
         # r'pt8sn\d+',       # pt8sn0, pt8sn1, ..., pt8sn10
         # r'pt\d+sn\d+',     # 所有ptXsnY格式
+        r'^\d+$',          # 气象数据 (纯数字命名，如 68)
     ],
     'exclude_patterns': [
         # 示例: 排除含氧系统
@@ -67,15 +105,30 @@ plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 
-def load_large_D_outliers():
+def load_large_D_outliers(enable_filtering=None):
     """
     加载大D值异常run清单
+    
+    Parameters:
+    -----------
+    enable_filtering : bool, optional
+        是否启用筛选。如果为 None，使用全局配置
     
     Returns:
     --------
     outliers : set
         异常文件路径集合
     """
+    # 使用参数或全局配置
+    if enable_filtering is None:
+        enable_filtering = ENABLE_OUTLIER_FILTERING
+    
+    # 检查是否启用筛选
+    if not enable_filtering:
+        print(f"   [!] Outlier filtering is DISABLED (--nofilter)")
+        print(f"   [!] Will plot ALL runs (including outliers)")
+        return set()
+    
     try:
         df_outliers = pd.read_csv(OUTLIERS_CSV)
         outlier_files = set(df_outliers['filepath'].values)
@@ -179,6 +232,8 @@ def build_file_index(outlier_files=None):
 
 def extract_base_system(composition_name):
     """提取基础体系名称"""
+    # 转换为字符串（防止整数等类型）
+    composition_name = str(composition_name)
     match = re.match(r'^(Cv)-\d+$', composition_name)
     if match:
         return match.group(1)
@@ -274,7 +329,7 @@ def read_gmx_msd_xvg(filepath):
     return np.array(time_data), np.array(msd_data)
 
 
-def plot_system_all_temps_fast(base_system, compositions, df_all, file_index, file_index_filtered, filter_stats, max_temps=None):
+def plot_system_all_temps_fast(base_system, compositions, df_all, file_index, file_index_filtered, filter_stats, max_temps=None, use_file_temps=False):
     """
     快速绘制 - 使用文件索引,同时绘制有效runs和被筛选runs
     
@@ -294,6 +349,8 @@ def plot_system_all_temps_fast(base_system, compositions, df_all, file_index, fi
         筛选统计
     max_temps : int, optional
         最大温度数
+    use_file_temps : bool, optional
+        是否从文件索引获取温度列表（用于 --nofilter 模式）
     """
     
     print(f"\n{'='*80}")
@@ -304,12 +361,30 @@ def plot_system_all_temps_fast(base_system, compositions, df_all, file_index, fi
     
     df_sys = df_all[df_all['composition'].isin(compositions)]
     
-    if len(df_sys) == 0:
-        print(f"[X] No data")
-        return
-    
-    temperatures = sorted(df_sys['temperature'].unique(),
-                         key=lambda x: int(x.replace('K', '')))
+    # 获取温度列表
+    if use_file_temps:
+        # 从文件索引获取所有可用温度（用于 --nofilter）
+        temp_set = set()
+        for key in list(file_index.keys()) + list(file_index_filtered.keys()):
+            comp_str, temp, elem = key
+            # 检查组成是否匹配
+            if any(str(c) == comp_str for c in compositions):
+                temp_set.add(temp)
+        
+        if not temp_set:
+            print(f"[X] No files found in file index")
+            return
+        
+        temperatures = sorted(temp_set, key=lambda x: int(x.replace('K', '')))
+        print(f"Temperatures (from files): {len(temperatures)} - {temperatures}")
+    else:
+        # 从 DataFrame 获取温度（默认行为）
+        if len(df_sys) == 0:
+            print(f"[X] No data in DataFrame")
+            return
+        
+        temperatures = sorted(df_sys['temperature'].unique(),
+                             key=lambda x: int(x.replace('K', '')))
     
     print(f"Data points: {len(df_sys)}")
     print(f"Temperatures: {len(temperatures)} - {temperatures}")
@@ -347,7 +422,8 @@ def plot_system_all_temps_fast(base_system, compositions, df_all, file_index, fi
             
             # 从索引查找文件
             for comp in compositions:
-                key = (comp, temp, element)
+                # 确保 composition 是字符串（文件索引的key是字符串）
+                key = (str(comp), temp, element)
                 
                 # 累加统计
                 if key in filter_stats:
@@ -540,7 +616,15 @@ def plot_system_all_temps_fast(base_system, compositions, df_all, file_index, fi
     print(f"{'='*80}\n")
 
 
-def main():
+def main(enable_filtering=None):
+    """
+    主函数
+    
+    Parameters:
+    -----------
+    enable_filtering : bool, optional
+        是否启用异常值筛选。None = 使用全局配置
+    """
     print("\n" + "="*80)
     print("MSD Curves - Fast Version (with file indexing + outlier filtering)")
     print("="*80)
@@ -549,7 +633,7 @@ def main():
     
     # 0. 加载异常清单
     print("\n[0/6] Loading outlier list...")
-    outlier_files = load_large_D_outliers()
+    outlier_files = load_large_D_outliers(enable_filtering)
     
     # 1. 构建文件索引 (一次性,分别索引有效runs和被筛选runs)
     file_index, file_index_filtered, filter_stats = build_file_index(outlier_files)
@@ -597,11 +681,15 @@ def main():
     success = 0
     failed = []
     
+    # 如果关闭了筛选，使用文件索引的温度列表
+    use_file_temps = (enable_filtering is not None and not enable_filtering)
+    
     for idx, (base_sys, comps) in enumerate(sorted(system_groups.items()), 1):
         print(f"\n[{idx}/{len(system_groups)}] {base_sys}...")
         
         try:
-            plot_system_all_temps_fast(base_sys, comps, df, file_index, file_index_filtered, filter_stats, max_temps=None)
+            plot_system_all_temps_fast(base_sys, comps, df, file_index, file_index_filtered, filter_stats, 
+                                      max_temps=None, use_file_temps=use_file_temps)
             success += 1
         except Exception as e:
             print(f"[X] Failed: {e}")
@@ -701,4 +789,28 @@ def generate_filter_report(filter_stats, output_dir):
 
 
 if __name__ == '__main__':
-    main()
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(
+        description='绘制MSD曲线 (支持异常值筛选)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python step3_plot_msd.py              # 默认启用筛选
+  python step3_plot_msd.py --nofilter   # 关闭筛选，绘制所有曲线
+        """
+    )
+    parser.add_argument(
+        '--nofilter',
+        action='store_true',
+        help='关闭异常值筛选，绘制所有曲线（包括异常值）'
+    )
+    
+    args = parser.parse_args()
+    
+    # 根据命令行参数决定是否筛选
+    if args.nofilter:
+        enable_filtering = False
+    else:
+        enable_filtering = None  # 使用全局配置
+    
+    main(enable_filtering)

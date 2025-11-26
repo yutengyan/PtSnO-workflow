@@ -1,23 +1,35 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Step4: 从集合平均MSD计算扩散系数D
+Step4: 计算集成平均扩散系数D
 ==========================================
 
 功能:
-1. 读取step3生成的集合平均MSD数据
-2. 对每个(composition, temperature, element)组合拟合D值
-3. 支持系统过滤 (与step3一致的配置)
-4. 生成详细的D值统计报告和可视化
+1. 直接从GMX MSD原始数据构建文件索引
+2. 对每个(composition, temperature, element)组合计算集成平均MSD
+3. 拟合集成平均MSD曲线得到扩散系数D
+4. 支持系统过滤 (与step3一致的配置)
+5. 支持异常值筛选 (可选)
+6. 生成详细的D值统计报告和可视化
+
+注意:
+- 本脚本独立运行，不依赖step2或step3的输出
+- 直接读取.xvg文件，计算集成平均，然后拟合D值
+- 与step2的区别: step2是预先计算并保存集成结果，step4是实时计算
 
 输入:
-- GMX MSD原始数据 (从file_index读取)
-- step1的异常清单 (large_D_outliers.csv)
+- GMX MSD原始数据 (.xvg文件，从GMX_DATA_DIRS读取)
+- step1的异常清单 (large_D_outliers.csv，可选)
 
 输出:
 - ensemble_D_values.csv: D值汇总表
-- D_vs_temperature_*.png: D-T关系图
-- D_comparison_report.txt: 统计报告
+- D_vs_T_*.png: D-T关系图
+- D_calculation_report.txt: 统计报告
+
+使用方法:
+--------
+python step4_calculate_ensemble_D.py              # 默认：启用异常值筛选
+python step4_calculate_ensemble_D.py --nofilter   # 关闭筛选，使用所有曲线
 """
 
 import pandas as pd
@@ -29,6 +41,7 @@ import re
 import warnings
 from collections import defaultdict
 from scipy import stats
+import argparse
 from tqdm import tqdm
 warnings.filterwarnings('ignore')
 
@@ -37,10 +50,11 @@ BASE_DIR = Path(__file__).parent  # workflow目录
 OUTLIERS_CSV = BASE_DIR / 'results' / 'large_D_outliers.csv'
 
 GMX_DATA_DIRS = [
-    BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
-    BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected',
+    # BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
+    # BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected',
     # 新版unwrap per-atom MSD数据 (2025-11-18)
-    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614'
+    # BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614',
+    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'air' / 'gmx_msd_results_20251124_170114'  # 🌬️ 气象数据
 ]
 
 OUTPUT_DIR = BASE_DIR / 'results' / 'ensemble_D_analysis'
@@ -50,9 +64,10 @@ OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
 SYSTEM_FILTER = {
     'include_patterns': [
         # 示例: 只处理Pt8相关系统
-        r'^pt8',           # pt8开头的所有系统
+        # r'^pt8',           # pt8开头的所有系统
         # r'pt8sn\d+',       # pt8sn0, pt8sn1, ..., pt8sn10
         # r'pt\d+sn\d+',     # 所有ptXsnY格式
+        r'^\d+$',          # 🌬️ 气象数据 (纯数字命名，如 68, 86)
     ],
     'exclude_patterns': [
         # 示例: 排除含氧系统
@@ -79,8 +94,20 @@ plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 
-def load_large_D_outliers():
-    """加载大D值异常run清单"""
+def load_large_D_outliers(enable_filtering=True):
+    """
+    加载大D值异常run清单
+    
+    Parameters:
+    -----------
+    enable_filtering : bool
+        是否启用异常值筛选
+    """
+    if not enable_filtering:
+        print(f"   [!] Outlier filtering is DISABLED (--nofilter)")
+        print(f"   [!] Will use ALL runs (including outliers)")
+        return set()
+    
     try:
         df_outliers = pd.read_csv(OUTLIERS_CSV)
         outlier_files = set(df_outliers['filepath'].values)
@@ -546,7 +573,15 @@ def generate_report(df_results, output_dir):
     print(f"  [OK] Saved: {report_file.name}")
 
 
-def main():
+def main(enable_filtering=True):
+    """
+    主函数
+    
+    Parameters:
+    -----------
+    enable_filtering : bool
+        是否启用异常值筛选
+    """
     print("\n" + "="*80)
     print("Step4: Calculate Ensemble Average Diffusion Coefficients")
     print("="*80)
@@ -555,7 +590,7 @@ def main():
     
     # 1. 加载异常清单
     print("\n[1/5] Loading outlier list...")
-    outlier_files = load_large_D_outliers()
+    outlier_files = load_large_D_outliers(enable_filtering)
     
     # 2. 构建文件索引
     file_index = build_file_index(outlier_files)
@@ -618,4 +653,25 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(
+        description='计算集成平均扩散系数 (支持异常值筛选)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python step4_calculate_ensemble_D.py              # 默认：只使用有效曲线
+  python step4_calculate_ensemble_D.py --nofilter   # 使用所有曲线（包括异常值）
+        """
+    )
+    parser.add_argument(
+        '--nofilter',
+        action='store_true',
+        help='关闭异常值筛选，使用所有曲线计算扩散系数'
+    )
+    
+    args = parser.parse_args()
+    
+    # 根据命令行参数决定是否筛选
+    enable_filtering = not args.nofilter
+    
+    main(enable_filtering)

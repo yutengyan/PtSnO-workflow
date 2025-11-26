@@ -2,42 +2,55 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-GMX MSD集合平均分析工具 (v3.0 简化版)
+Step2: GMX MSD集成平均分析
 =============================================================================
 创建时间: 2025-10-16
+最后更新: 2025-11-25
 作者: GitHub Copilot
 
-工作流程:
-    1. [可选] 运行 step1_detect_outliers.py 生成异常run清单
-    2. 运行本脚本进行集合平均和筛选
-    3. 运行 step3_plot_msd.py 绘制MSD曲线
+功能:
+    1. 读取 GMX MSD 原始数据 (.xvg文件)
+    2. 对每个(组成-温度-元素)组计算集成平均MSD
+    3. 拟合集成平均曲线得到扩散系数D
+    4. 应用筛选策略过滤低质量数据
+    5. 保存集成分析结果供step3使用
 
-筛选策略 (v3.0):
-    第0步: 大D值预筛选 (单次run级别,可选)
-        - 如果存在 large_D_outliers.csv,则舍弃异常run
-        - 如果不存在,跳过此步骤
+工作流程:
+    1. [可选] 先运行 step1 生成异常run清单
+    2. 运行本脚本进行集成平均和筛选
+    3. 运行 step3 绘制MSD曲线
+
+筛选策略:
+    第0步: 异常run预筛选 (可选)
+        - 如果存在 large_D_outliers.csv,排除异常run
+        - 如果不存在,使用所有run
     
     第1步: Intercept筛选
-        - 阈值: INTERCEPT_MAX (默认20.0 A²,可调整)
+        - 阈值: INTERCEPT_MAX (默认20.0 A²)
         - 物理意义: 过大表示结构松弛异常
     
     第2步: D值物理合理性筛选
         - 阈值: D < D_MAX_THRESHOLD (默认0.1 cm²/s)
-        - 去除团簇整体漂移
+        - 去除团簇整体漂移等非物理现象
 
 参数说明:
     - INTERCEPT_MAX: Intercept上限,默认20.0 A²
-      * 15.0: 严格模式,适合寻找高质量数据
-      * 20.0: 宽松模式,适合MSD曲线绘图
-      * 可根据需求调整
+      * 15.0: 严格模式,高质量数据
+      * 20.0: 宽松模式,更多数据覆盖
     
     - D_MAX_THRESHOLD: D值上限,默认0.1 cm²/s
-      * 筛除异常大的扩散系数(团簇漂移)
+      * 筛除异常大的扩散系数
 
-运行方法:
-    conda activate base
-    cd v3_simplified_workflow
-    python scripts/step2_ensemble_analysis.py
+输入:
+    - GMX MSD原始数据 (.xvg文件,从GMX_DATA_DIRS读取)
+    - [可选] step1的异常清单 (large_D_outliers.csv)
+
+输出: results/
+    ├── ensemble_analysis_results.csv   (集成分析结果,供step3使用)
+    └── ensemble_analysis_filtered.csv  (被筛选的数据)
+
+使用方法:
+    python step2_ensemble_analysis.py   # 计算集成平均
 
 输出:
     results/
@@ -62,10 +75,11 @@ BASE_DIR = Path(__file__).parent
 
 # 数据源目录
 GMX_DATA_DIRS = [
-    BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
-    BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected',
+    # BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
+    # BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected',
     # 新版unwrap per-atom MSD数据 (2025-11-18)
-    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614'
+    # BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614',
+    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'air' / 'gmx_msd_results_20251124_170114'  # 🌬️ 气象数据
 ]
 
 # 输出目录
