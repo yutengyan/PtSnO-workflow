@@ -141,14 +141,18 @@ plt.rcParams['mathtext.default'] = 'regular'
 # ============================================================================
 
 BASE_DIR = Path(__file__).parent
-DATA_FILE = BASE_DIR / 'results' / 'step7_4_multi_system' / 'step7_4_all_systems_data.csv'
+
+# 输入数据文件
+DATA_FILE = BASE_DIR / 'results' / 'step6_0_multi_system' / 'step6_0_all_systems_data.csv'  # step6_0输出的主数据
 D_VALUE_FILE = BASE_DIR / 'results' / 'ensemble_analysis_results.csv'  # D值数据源
 SUPPORT_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'sup' / 'energy_master_20251021_151520.csv'  # 载体能量数据
-OUTPUT_DIR = BASE_DIR / 'results' / 'step7_4_2_clustering'
+
+# 输出目录
+OUTPUT_DIR = BASE_DIR / 'results' / 'step6_1_clustering'
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print("="*80)
-print("Step 7.4.2: Lindemann指数聚类分析")
+print("Step 6.1: Lindemann指数聚类分析")
 print("="*80)
 
 # ============================================================================
@@ -684,24 +688,34 @@ def fit_partition_heat_capacity(df_clustered, Cv_support=38.2151):
     Args:
         df_clustered: 分区后的数据
         Cv_support: 载体热容 (默认38.2151 meV/K, 来自step7.4计算)
+                   对于Air系列(气相纳米团簇)，应传入0
     
     Returns:
         dict: 各分区的热容拟合结果
     """
     print(f"\n>>> 基于分区拟合热容...")
     
-    # 加载载体能量数据进行重新拟合
-    support_fit = load_support_energy_data()
+    # 判断是否为Air系列（Cv_support=0表示不扣除载体）
+    is_air_system = (Cv_support == 0.0)
     
-    if support_fit is not None:
-        slope_support, intercept_support, R2_support = support_fit
-        # 注意：这里不打印，避免在策略对比时重复输出
+    # 加载载体能量数据进行重新拟合
+    if is_air_system:
+        # Air系列: 不需要载体能量数据，直接拟合总能量
+        slope_support = 0.0
+        intercept_support = 0.0
+        print(f"  [Air系列] 气相纳米团簇: 直接使用总能量拟合")
     else:
-        # 回退：使用默认Cv_support估算
-        slope_support = Cv_support / 1000  # meV/K -> eV/K
-        T_min = df_clustered['temp'].min()
-        E_total_min = df_clustered[df_clustered['temp'] == T_min]['avg_energy'].mean()
-        intercept_support = E_total_min * 0.9 - slope_support * T_min
+        support_fit = load_support_energy_data()
+        
+        if support_fit is not None:
+            slope_support, intercept_support, R2_support = support_fit
+            # 注意：这里不打印，避免在策略对比时重复输出
+        else:
+            # 回退：使用默认Cv_support估算
+            slope_support = Cv_support / 1000  # meV/K -> eV/K
+            T_min = df_clustered['temp'].min()
+            E_total_min = df_clustered[df_clustered['temp'] == T_min]['avg_energy'].mean()
+            intercept_support = E_total_min * 0.9 - slope_support * T_min
     
     partitions = df_clustered['phase_clustered'].unique()
     cv_results = {}
@@ -724,23 +738,35 @@ def fit_partition_heat_capacity(df_clustered, Cv_support=38.2151):
             print(f"    {partition}: 温度单一, 无法拟合")
             continue
         
-        # 计算载体能量和团簇能量
-        E_support = slope_support * T + intercept_support
-        E_cluster = E_total - E_support
-        
-        # 重新拟合团簇能量-温度关系
-        slope_cluster, intercept_cluster, r_value_cluster, p_value, std_err_cluster = linregress(T, E_cluster)
-        R2_cluster = r_value_cluster ** 2
-        
-        # 热容计算（基于团簇能量拟合）
-        Cv_cluster = slope_cluster * 1000  # eV/K -> meV/K
-        Cv_cluster_err = std_err_cluster * 1000
-        
-        # 同时保留总能量拟合信息（用于对比）
-        slope_total, intercept_total, r_value_total, _, std_err_total = linregress(T, E_total)
-        Cv_total = slope_total * 1000
-        Cv_total_err = std_err_total * 1000
-        R2_total = r_value_total ** 2
+        if is_air_system:
+            # Air系列: 直接拟合总能量
+            slope_cluster, intercept_cluster, r_value_cluster, p_value, std_err_cluster = linregress(T, E_total)
+            R2_cluster = r_value_cluster ** 2
+            Cv_cluster = slope_cluster * 1000  # eV/K -> meV/K
+            Cv_cluster_err = std_err_cluster * 1000
+            
+            # Air系列: Cv_total = Cv_cluster
+            Cv_total = Cv_cluster
+            Cv_total_err = Cv_cluster_err
+            R2_total = R2_cluster
+        else:
+            # 普通系统: 计算载体能量和团簇能量
+            E_support = slope_support * T + intercept_support
+            E_cluster = E_total - E_support
+            
+            # 重新拟合团簇能量-温度关系
+            slope_cluster, intercept_cluster, r_value_cluster, p_value, std_err_cluster = linregress(T, E_cluster)
+            R2_cluster = r_value_cluster ** 2
+            
+            # 热容计算（基于团簇能量拟合）
+            Cv_cluster = slope_cluster * 1000  # eV/K -> meV/K
+            Cv_cluster_err = std_err_cluster * 1000
+            
+            # 同时保留总能量拟合信息（用于对比）
+            slope_total, intercept_total, r_value_total, _, std_err_total = linregress(T, E_total)
+            Cv_total = slope_total * 1000
+            Cv_total_err = std_err_total * 1000
+            R2_total = r_value_total ** 2
         
         cv_results[partition] = {
             'n_points': len(df_part),
@@ -775,10 +801,17 @@ def fit_partition_heat_capacity(df_clustered, Cv_support=38.2151):
         cv_results[partition]['grade'] = grade
         cv_results[partition]['grade_score'] = grade_score
         
-        print(f"    {partition}: n={len(df_part)}, "
-              f"T={T.min():.0f}-{T.max():.0f}K, "
-              f"Cv_cluster={Cv_cluster:.4f}±{Cv_cluster_err:.4f} meV/K (已扣除载体{Cv_support:.4f}), "
-              f"R^2={R2_cluster:.4f} {grade}")
+        # 打印结果 (Air系列不显示扣除载体)
+        if is_air_system:
+            print(f"    {partition}: n={len(df_part)}, "
+                  f"T={T.min():.0f}-{T.max():.0f}K, "
+                  f"Cv={Cv_cluster:.4f}±{Cv_cluster_err:.4f} meV/K (气相纳米团簇), "
+                  f"R^2={R2_cluster:.4f} {grade}")
+        else:
+            print(f"    {partition}: n={len(df_part)}, "
+                  f"T={T.min():.0f}-{T.max():.0f}K, "
+                  f"Cv_cluster={Cv_cluster:.4f}±{Cv_cluster_err:.4f} meV/K (已扣除载体{Cv_support:.4f}), "
+                  f"R^2={R2_cluster:.4f} {grade}")
     
     return cv_results
 
@@ -809,7 +842,14 @@ def compare_partition_strategies(df_structure, structure_name, use_energy=False,
     print(f"多策略对比分析: {structure_name}")
     print("="*80)
     
-    Cv_support = 38.2151  # meV/K (与step7.4保持一致)
+    # Air系列是气相纳米团簇，不需要扣除载体热容
+    is_air_system = structure_name.startswith('Air') or structure_name in ['68', '86']
+    if is_air_system:
+        Cv_support = 0.0  # Air系列不扣除载体热容
+        print(f"  [Note] Air系列(气相纳米团簇): Cv_support = 0 (不扣除载体热容)")
+    else:
+        Cv_support = 38.2151  # meV/K (与step7.4保持一致)
+    
     comparison = {}
     
     # 准备特征
@@ -1276,28 +1316,41 @@ def plot_clustering_results(results, df_structure, output_dir):
     ax6.grid(True, alpha=0.3)
     
     # ========== 子图8-9: 分区热容拟合图 ==========
+    # Air系列是气相纳米团簇，不需要扣除载体热容
+    is_air_system = structure_name.startswith('Air') or structure_name in ['68', '86']
+    if is_air_system:
+        Cv_support = 0.0  # Air系列不扣除载体热容
+    else:
+        Cv_support = 38.2151  # meV/K (来自step7.4)
+    
     # 拟合各分区的热容
-    Cv_support = 38.2151  # meV/K (来自step7.4)
     cv_results = fit_partition_heat_capacity(df_clustered, Cv_support)
     
     if cv_results:
         # 子图8: 相对能量-温度拟合线图 (按分区) - 只显示团簇能量变化
         ax7 = fig.add_subplot(gs[row_offset+2, 0])
         
-        # 加载载体能量数据
-        support_fit = load_support_energy_data()
-        
-        if support_fit is not None:
-            # 使用实际的载体能量拟合结果
-            slope_support, intercept_support, R2_support = support_fit
-            print(f"  [图h] 使用实际载体能量数据: Cv={slope_support*1000:.4f} meV/K, R^2={R2_support:.6f}")
+        # Air系列不需要扣除载体能量
+        if is_air_system:
+            # Air系列: 直接使用总能量作为团簇能量
+            slope_support = 0.0
+            intercept_support = 0.0
+            print(f"  [图h] Air系列(气相纳米团簇): 直接使用总能量")
         else:
-            # 回退：使用默认Cv_support估算
-            print(f"  [图h] 使用默认Cv_support估算载体能量")
-            slope_support = Cv_support / 1000  # meV/K -> eV/K
-            T_min = df_clustered['temp'].min()
-            E_total_min = df_clustered[df_clustered['temp'] == T_min]['avg_energy'].mean()
-            intercept_support = E_total_min * 0.9 - slope_support * T_min
+            # 普通系统: 加载载体能量数据
+            support_fit = load_support_energy_data()
+            
+            if support_fit is not None:
+                # 使用实际的载体能量拟合结果
+                slope_support, intercept_support, R2_support = support_fit
+                print(f"  [图h] 使用实际载体能量数据: Cv={slope_support*1000:.4f} meV/K, R^2={R2_support:.6f}")
+            else:
+                # 回退：使用默认Cv_support估算
+                print(f"  [图h] 使用默认Cv_support估算载体能量")
+                slope_support = Cv_support / 1000  # meV/K -> eV/K
+                T_min = df_clustered['temp'].min()
+                E_total_min = df_clustered[df_clustered['temp'] == T_min]['avg_energy'].mean()
+                intercept_support = E_total_min * 0.9 - slope_support * T_min
         
         # 计算参考能量（使用最低温度点的团簇能量）
         T_min = df_clustered['temp'].min()
@@ -1358,15 +1411,23 @@ def plot_clustering_results(results, df_structure, output_dir):
         
         ax7.set_xlabel('Temperature (K)', fontsize=11, fontweight='bold')
         ax7.set_ylabel('ΔE_cluster (eV)', fontsize=11, fontweight='bold')
-        ax7.set_title('(h) 团簇相对能量-温度拟合 (各分区)\nCluster Relative Energy-Temperature Fit', 
-                     fontsize=11, fontweight='bold')
+        
+        # Air系列和普通系统使用不同的标题和说明
+        if is_air_system:
+            ax7.set_title('(h) 纳米团簇相对能量-温度拟合 (各分区)\nCluster Relative Energy-Temperature Fit', 
+                         fontsize=11, fontweight='bold')
+            ax7.text(0.02, 0.98, f'E_ref = {E_cluster_ref:.2f} eV\n(气相纳米团簇,无载体)',
+                    transform=ax7.transAxes, fontsize=8, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
+        else:
+            ax7.set_title('(h) 团簇相对能量-温度拟合 (各分区)\nCluster Relative Energy-Temperature Fit', 
+                         fontsize=11, fontweight='bold')
+            ax7.text(0.02, 0.98, f'E_cluster,ref = {E_cluster_ref:.2f} eV\n(载体能量已扣除)',
+                    transform=ax7.transAxes, fontsize=8, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7))
+        
         ax7.legend(fontsize=8, loc='best')
         ax7.grid(True, alpha=0.3)
-        
-        # 添加说明：已扣除载体能量
-        ax7.text(0.02, 0.98, f'E_cluster,ref = {E_cluster_ref:.2f} eV\n(载体能量已扣除)',
-                transform=ax7.transAxes, fontsize=8, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7))
         
         # 子图9: 各分区团簇热容柱状图（使用重新拟合的结果）
         ax8 = fig.add_subplot(gs[row_offset+2, 1])
@@ -1439,252 +1500,252 @@ def plot_clustering_results(results, df_structure, output_dir):
         # ===== 新增：子图10 (j): 温度-团簇能量散点图（按温度平均，显示标准差） =====
         ax9 = fig.add_subplot(gs[row_offset+3, 0])
         
-        # 加载载体能量数据
-        support_fit = load_support_energy_data()
-        if support_fit is not None:
-            slope_support, intercept_support, R2_support = support_fit
-            
-            # 按温度分组，计算每个温度的团簇能量平均值和标准差
-            temp_groups = df_clustered.groupby('temp')
-            temps_unique = []
-            E_cluster_mean = []
-            E_cluster_std = []
-            
-            for temp, group in temp_groups:
+        # Air系列: 直接使用总能量; 普通系统: 扣除载体能量
+        # 注意: is_air_system 和 slope_support/intercept_support 已在前面定义
+        
+        # 按温度分组，计算每个温度的团簇能量平均值和标准差
+        temp_groups = df_clustered.groupby('temp')
+        temps_unique = []
+        E_cluster_mean = []
+        E_cluster_std = []
+        
+        for temp, group in temp_groups:
+            if is_air_system:
+                # Air系列: 直接使用总能量
+                E_cluster = group['avg_energy'].values
+            else:
+                # 普通系统: 扣除载体能量
                 E_support = slope_support * temp + intercept_support
                 E_cluster = group['avg_energy'].values - E_support
-                temps_unique.append(temp)
-                E_cluster_mean.append(np.mean(E_cluster))
-                E_cluster_std.append(np.std(E_cluster))
+            temps_unique.append(temp)
+            E_cluster_mean.append(np.mean(E_cluster))
+            E_cluster_std.append(np.std(E_cluster))
+        
+        temps_unique = np.array(temps_unique)
+        E_cluster_mean = np.array(E_cluster_mean)
+        E_cluster_std = np.array(E_cluster_std)
+        
+        # 计算相对能量（相对于最低温度）
+        E_cluster_ref_j = E_cluster_mean.min()
+        E_cluster_mean_rel = E_cluster_mean - E_cluster_ref_j
+        
+        # 绘制散点图（带误差棒）- 使用相对能量
+        ax9.errorbar(temps_unique, E_cluster_mean_rel, yerr=E_cluster_std,
+                    fmt='o', markersize=8, capsize=5, capthick=2,
+                    color='#2c3e50', alpha=0.7, ecolor='#95a5a6',
+                    label='团簇相对能量 (按温度平均)')
+        
+        # 用颜色标注不同相态的数据点
+        for phase, color in colors_phase.items():
+            if phase not in cv_cluster_results:
+                continue
+            df_phase = df_clustered[df_clustered['phase_clustered'] == phase]
+            temps_phase = df_phase['temp'].unique()
             
-            temps_unique = np.array(temps_unique)
-            E_cluster_mean = np.array(E_cluster_mean)
-            E_cluster_std = np.array(E_cluster_std)
-            
-            # 计算相对能量（相对于最低温度）
-            E_cluster_ref = E_cluster_mean.min()
-            E_cluster_mean_rel = E_cluster_mean - E_cluster_ref
-            
-            # 绘制散点图（带误差棒）- 使用相对能量
-            ax9.errorbar(temps_unique, E_cluster_mean_rel, yerr=E_cluster_std,
-                        fmt='o', markersize=8, capsize=5, capthick=2,
-                        color='#2c3e50', alpha=0.7, ecolor='#95a5a6',
-                        label='团簇相对能量 (按温度平均)')
-            
-            # 用颜色标注不同相态的数据点
-            for phase, color in colors_phase.items():
-                if phase not in cv_cluster_results:
-                    continue
-                df_phase = df_clustered[df_clustered['phase_clustered'] == phase]
-                temps_phase = df_phase['temp'].unique()
-                
-                # 只标注相态区域的点（不重新绘制）
-                for temp in temps_phase:
-                    idx = np.where(temps_unique == temp)[0]
-                    if len(idx) > 0:
-                        ax9.scatter(temp, E_cluster_mean_rel[idx[0]], 
-                                  c=color, s=100, alpha=0.5, zorder=3,
-                                  edgecolors='black', linewidths=1)
-            
-            ax9.set_xlabel('Temperature (K)', fontsize=11, fontweight='bold')
-            ax9.set_ylabel('ΔE_cluster (eV)', fontsize=11, fontweight='bold')
-            ax9.set_title('(j) 团簇相对能量-温度关系 (按温度平均)\nCluster Relative Energy vs Temperature (per-T average)', 
-                         fontsize=11, fontweight='bold')
-            ax9.grid(True, alpha=0.3)
-            ax9.legend(fontsize=8, loc='best')
-            
-            # 添加说明
-            ax9.text(0.02, 0.98, f'E_cluster,ref = {E_cluster_ref:.2f} eV\n误差棒: 标准差\n彩色点: 相态标识',
+            # 只标注相态区域的点（不重新绘制）
+            for temp in temps_phase:
+                idx = np.where(temps_unique == temp)[0]
+                if len(idx) > 0:
+                    ax9.scatter(temp, E_cluster_mean_rel[idx[0]], 
+                              c=color, s=100, alpha=0.5, zorder=3,
+                              edgecolors='black', linewidths=1)
+        
+        ax9.set_xlabel('Temperature (K)', fontsize=11, fontweight='bold')
+        ax9.set_ylabel('ΔE_cluster (eV)', fontsize=11, fontweight='bold')
+        ax9.set_title('(j) 团簇相对能量-温度关系 (按温度平均)\nCluster Relative Energy vs Temperature (per-T average)', 
+                     fontsize=11, fontweight='bold')
+        ax9.grid(True, alpha=0.3)
+        ax9.legend(fontsize=8, loc='best')
+        
+        # 添加说明 (Air系列和普通系统不同)
+        if is_air_system:
+            ax9.text(0.02, 0.98, f'E_ref = {E_cluster_ref_j:.2f} eV\n误差棒: 标准差\n彩色点: 相态标识\n(气相纳米团簇)',
+                    transform=ax9.transAxes, fontsize=8, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
+        else:
+            ax9.text(0.02, 0.98, f'E_cluster,ref = {E_cluster_ref_j:.2f} eV\n误差棒: 标准差\n彩色点: 相态标识',
                     transform=ax9.transAxes, fontsize=8, verticalalignment='top',
                     bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7))
-        else:
-            ax9.text(0.5, 0.5, 'Support energy data not available', 
-                    ha='center', va='center', fontsize=12)
-            ax9.axis('off')
         
         # ===== 新增：子图11 (k): 整体拟合热容（基准对比） =====
         ax10 = fig.add_subplot(gs[row_offset+3, 1])
         
-        if support_fit is not None:
-            # 对所有温度点的团簇相对能量整体拟合（不分相态）
-            T_all = temps_unique
-            E_cluster_all_rel = E_cluster_mean_rel
+        # 对所有温度点的团簇相对能量整体拟合（不分相态）
+        # 注意: temps_unique 和 E_cluster_mean_rel 已在子图(j)中计算
+        T_all = temps_unique
+        E_cluster_all_rel = E_cluster_mean_rel
+        
+        if len(T_all) >= 3:
+            slope_overall, intercept_overall, r_value_overall, p_value_overall, std_err_overall = linregress(T_all, E_cluster_all_rel)
+            R2_overall = r_value_overall ** 2
+            Cv_overall = slope_overall * 1000  # meV/K
+            Cv_overall_err = std_err_overall * 1000
             
-            if len(T_all) >= 3:
-                slope_overall, intercept_overall, r_value_overall, p_value_overall, std_err_overall = linregress(T_all, E_cluster_all_rel)
-                R2_overall = r_value_overall ** 2
-                Cv_overall = slope_overall * 1000  # meV/K
-                Cv_overall_err = std_err_overall * 1000
-                
-                # 绘制整体拟合线（不绘制数据点，数据点在分相态中绘制）
-                T_fit = np.linspace(T_all.min(), T_all.max(), 100)
-                E_fit_rel = slope_overall * T_fit + intercept_overall
-                
-                ax10.plot(T_fit, E_fit_rel, 'r--', linewidth=2.5, alpha=0.8,
-                         label=f'整体拟合 (R^2={R2_overall:.4f})', zorder=2)
-                
-                # 基于聚类结果，对每个分区使用多数投票确定专属温度（避免重叠）
-                phase_avg_fits = {}
-                
-                # 第一步：为每个温度确定主导分区（多数投票）
-                temp_to_partition = {}
-                print(f"\n>>> 多数投票温度分配:")
-                for temp in temps_unique:
-                    df_temp = df_clustered[df_clustered['temp'] == temp]
-                    # 统计每个分区在该温度的数量
-                    partition_counts = df_temp['phase_clustered'].value_counts()
-                    # 选择最多的分区作为该温度的主导分区
-                    dominant_partition = partition_counts.idxmax()
-                    temp_to_partition[temp] = dominant_partition
-                    print(f"  T={temp:4.0f}K: {dict(partition_counts)} → 分配给 {dominant_partition}")
-                
-                # 统计每个分区的温度
-                print(f"\n>>> 各分区专属温度:")
-                for phase in colors_phase.keys():
-                    phase_temps = [temp for temp, partition in temp_to_partition.items() if partition == phase]
-                    phase_temps = sorted(phase_temps)
-                    if phase_temps:
-                        print(f"  {phase}: {len(phase_temps)}个温度点 → {phase_temps[0]:.0f}-{phase_temps[-1]:.0f}K")
-                    else:
-                        print(f"  {phase}: 无专属温度（被其他分区占据）")
-                
-                # 第二步：为每个分区收集其专属温度点（无重叠）
-                for phase, color in colors_phase.items():
-                    if phase not in cv_cluster_results:
-                        continue
-                    
-                    # 获取该分区的专属温度（多数投票胜出的温度）
-                    phase_temps = [temp for temp, partition in temp_to_partition.items() if partition == phase]
-                    phase_temps = sorted(phase_temps)
-                    
-                    # 从按温度平均的数据中筛选出该分区的温度点
-                    # 至少需要2个点才能进行拟合（降低要求以显示所有分区）
-                    if len(phase_temps) >= 2:
-                        mask_phase = np.isin(temps_unique, phase_temps)
-                        T_phase_avg = temps_unique[mask_phase]
-                        E_phase_avg_rel = E_cluster_mean_rel[mask_phase]
-                        E_phase_std = E_cluster_std[mask_phase]
-                        
-                        # 对该分区的按温度平均数据重新拟合（使用相对能量）
-                        slope_ph_avg, intercept_ph_avg, r_value_ph_avg, _, std_err_ph_avg = linregress(T_phase_avg, E_phase_avg_rel)
-                        R2_ph_avg = r_value_ph_avg ** 2
-                        Cv_ph_avg = slope_ph_avg * 1000
-                        Cv_ph_avg_err = std_err_ph_avg * 1000  # 拟合误差
-                        
-                        phase_avg_fits[phase] = {
-                            'slope': slope_ph_avg,
-                            'intercept': intercept_ph_avg,
-                            'R2': R2_ph_avg,
-                            'Cv': Cv_ph_avg,
-                            'Cv_err': Cv_ph_avg_err,
-                            'n_temps': len(T_phase_avg),
-                            'T_range': (T_phase_avg.min(), T_phase_avg.max()),
-                            'T_data': T_phase_avg,
-                            'E_data': E_phase_avg_rel,
-                            'E_std': E_phase_std
-                        }
-                        
-                        # 绘制分区数据点（带误差棒）- 使用相对能量
-                        ax10.errorbar(T_phase_avg, E_phase_avg_rel, yerr=E_phase_std,
-                                     fmt='o', markersize=6, capsize=4, capthick=1.5,
-                                     color=color, alpha=0.6, ecolor=color,
-                                     label=f'{phase} 数据', zorder=4)
-                        
-                        # 绘制分区拟合线（相对能量）
-                        T_phase_fit = np.linspace(T_phase_avg.min(), T_phase_avg.max(), 50)
-                        E_phase_fit_rel = slope_ph_avg * T_phase_fit + intercept_ph_avg
-                        
-                        ax10.plot(T_phase_fit, E_phase_fit_rel, '-', color=color, 
-                                 linewidth=2.5, alpha=0.9, 
-                                 label=f'{phase} 拟合 (R^2={R2_ph_avg:.4f})', zorder=3)
-                        
-                        # 输出分区拟合结果
-                        print(f"  [分区拟合] {phase}: Cv={Cv_ph_avg:.4f}±{Cv_ph_avg_err:.4f} meV/K, R^2={R2_ph_avg:.4f}, n_temps={len(T_phase_avg)}, T={T_phase_avg.min():.0f}-{T_phase_avg.max():.0f}K")
-                
-                ax10.set_xlabel('Temperature (K)', fontsize=11, fontweight='bold')
-                ax10.set_ylabel('ΔE_cluster (eV)', fontsize=11, fontweight='bold')
-                ax10.set_title('(k) 整体拟合 vs 分区拟合对比\nOverall Fit vs Partitioned Fit', 
-                             fontsize=11, fontweight='bold')
-                ax10.legend(fontsize=7, loc='best', ncol=2)
-                ax10.grid(True, alpha=0.3)
-                
-                # 添加热容对比信息（使用按温度平均数据的拟合结果，带误差）
-                cv_info = f'整体拟合:\n  Cv={Cv_overall:.3f}±{Cv_overall_err:.3f} meV/K\n  $R^2$={R2_overall:.4f}\n\n分区拟合:\n'
-                for phase in phase_avg_fits.keys():
-                    fit = phase_avg_fits[phase]
-                    cv_info += f'  {phase}: Cv={fit["Cv"]:.3f}±{fit["Cv_err"]:.3f}\n         $R^2$={fit["R2"]:.4f}\n'
-                
-                ax10.text(0.02, 0.98, cv_info.strip(),
-                         transform=ax10.transAxes, fontsize=7, verticalalignment='top',
-                         bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
-                
-                # 输出整体拟合结果
-                print(f"  [整体拟合-按温度平均] Cv_overall={Cv_overall:.4f}±{Cv_overall_err:.4f} meV/K, R^2={R2_overall:.4f}, n_temps={len(T_all)}")
-                
-                # ===== 新增：子图12 (l): 分相态热容柱状图（基于按温度平均数据，模仿图i） =====
-                ax11 = fig.add_subplot(gs[row_offset+3, 2])
-                
-                if phase_avg_fits:
-                    phases_with_fit = []
-                    cv_values_avg = []
-                    cv_errors_avg = []
-                    colors_list_avg = []
-                    
-                    # 根据实际存在的相态绘图
-                    for phase in phase_avg_fits.keys():
-                        phases_with_fit.append(phase)
-                        fit = phase_avg_fits[phase]
-                        cv_values_avg.append(fit['Cv'])
-                        cv_errors_avg.append(fit['Cv_err'])
-                        colors_list_avg.append(colors_phase.get(phase, '#95a5a6'))
-                    
-                    x_pos = np.arange(len(phases_with_fit))
-                    bars = ax11.bar(x_pos, cv_values_avg, yerr=cv_errors_avg, 
-                                   color=colors_list_avg, alpha=0.7, capsize=5,
-                                   edgecolor='black', linewidth=1.5)
-                    
-                    # 添加数值标签（包含误差和质量评级）
-                    for i, (phase, val) in enumerate(zip(phases_with_fit, cv_values_avg)):
-                        fit = phase_avg_fits[phase]
-                        error = cv_errors_avg[i]
-                        r2 = fit['R2']
-                        n_temps = fit['n_temps']
-                        
-                        # 质量评级（基于R²）
-                        if r2 > 0.95:
-                            grade = "★★★"
-                        elif r2 > 0.90:
-                            grade = "★★"
-                        elif r2 > 0.80:
-                            grade = "★"
-                        else:
-                            grade = "⚠"
-                        
-                        # 在柱子上方显示详细信息
-                        ax11.text(i, val + error + 0.3, 
-                                f'{val:.3f}±{error:.3f}\n(n={n_temps}, $R^2$={r2:.4f} {grade})',
-                                ha='center', va='bottom', fontsize=8, fontweight='bold')
-                    
-                    ax11.set_xticks(x_pos)
-                    ax11.set_xticklabels(phases_with_fit)
-                    ax11.set_ylabel('Cv_cluster (meV/K)', fontsize=11, fontweight='bold')
-                    ax11.set_title('(l) 分相态团簇热容 (按温度平均-多数投票)\nPartitioned Cv (per-T averaged, majority vote)', 
-                                  fontsize=11, fontweight='bold')
-                    ax11.grid(axis='y', alpha=0.3)
-                    
-                    # 添加说明
-                    ax11.text(0.02, 0.98, '基于按温度平均数据\n多数投票规则避免交叉',
-                            transform=ax11.transAxes, fontsize=8, verticalalignment='top',
-                            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7))
+            # 绘制整体拟合线（不绘制数据点，数据点在分相态中绘制）
+            T_fit = np.linspace(T_all.min(), T_all.max(), 100)
+            E_fit_rel = slope_overall * T_fit + intercept_overall
+            
+            ax10.plot(T_fit, E_fit_rel, 'r--', linewidth=2.5, alpha=0.8,
+                     label=f'整体拟合 (R^2={R2_overall:.4f})', zorder=2)
+            
+            # 基于聚类结果，对每个分区使用多数投票确定专属温度（避免重叠）
+            phase_avg_fits = {}
+            
+            # 第一步：为每个温度确定主导分区（多数投票）
+            temp_to_partition = {}
+            print(f"\n>>> 多数投票温度分配:")
+            for temp in temps_unique:
+                df_temp = df_clustered[df_clustered['temp'] == temp]
+                # 统计每个分区在该温度的数量
+                partition_counts = df_temp['phase_clustered'].value_counts()
+                # 选择最多的分区作为该温度的主导分区
+                dominant_partition = partition_counts.idxmax()
+                temp_to_partition[temp] = dominant_partition
+                print(f"  T={temp:4.0f}K: {dict(partition_counts)} → 分配给 {dominant_partition}")
+            
+            # 统计每个分区的温度
+            print(f"\n>>> 各分区专属温度:")
+            for phase in colors_phase.keys():
+                phase_temps = [temp for temp, partition in temp_to_partition.items() if partition == phase]
+                phase_temps = sorted(phase_temps)
+                if phase_temps:
+                    print(f"  {phase}: {len(phase_temps)}个温度点 → {phase_temps[0]:.0f}-{phase_temps[-1]:.0f}K")
                 else:
-                    ax11.text(0.5, 0.5, 'No valid fits', ha='center', va='center', fontsize=12)
-                    ax11.axis('off')
+                    print(f"  {phase}: 无专属温度（被其他分区占据）")
+            
+            # 第二步：为每个分区收集其专属温度点（无重叠）
+            for phase, color in colors_phase.items():
+                if phase not in cv_cluster_results:
+                    continue
+                
+                # 获取该分区的专属温度（多数投票胜出的温度）
+                phase_temps = [temp for temp, partition in temp_to_partition.items() if partition == phase]
+                phase_temps = sorted(phase_temps)
+                
+                # 从按温度平均的数据中筛选出该分区的温度点
+                # 至少需要2个点才能进行拟合（降低要求以显示所有分区）
+                if len(phase_temps) >= 2:
+                    mask_phase = np.isin(temps_unique, phase_temps)
+                    T_phase_avg = temps_unique[mask_phase]
+                    E_phase_avg_rel = E_cluster_mean_rel[mask_phase]
+                    E_phase_std = E_cluster_std[mask_phase]
+                    
+                    # 对该分区的按温度平均数据重新拟合（使用相对能量）
+                    slope_ph_avg, intercept_ph_avg, r_value_ph_avg, _, std_err_ph_avg = linregress(T_phase_avg, E_phase_avg_rel)
+                    R2_ph_avg = r_value_ph_avg ** 2
+                    Cv_ph_avg = slope_ph_avg * 1000
+                    Cv_ph_avg_err = std_err_ph_avg * 1000  # 拟合误差
+                    
+                    phase_avg_fits[phase] = {
+                        'slope': slope_ph_avg,
+                        'intercept': intercept_ph_avg,
+                        'R2': R2_ph_avg,
+                        'Cv': Cv_ph_avg,
+                        'Cv_err': Cv_ph_avg_err,
+                        'n_temps': len(T_phase_avg),
+                        'T_range': (T_phase_avg.min(), T_phase_avg.max()),
+                        'T_data': T_phase_avg,
+                        'E_data': E_phase_avg_rel,
+                        'E_std': E_phase_std
+                    }
+                    
+                    # 绘制分区数据点（带误差棒）- 使用相对能量
+                    ax10.errorbar(T_phase_avg, E_phase_avg_rel, yerr=E_phase_std,
+                                 fmt='o', markersize=6, capsize=4, capthick=1.5,
+                                 color=color, alpha=0.6, ecolor=color,
+                                 label=f'{phase} 数据', zorder=4)
+                    
+                    # 绘制分区拟合线（相对能量）
+                    T_phase_fit = np.linspace(T_phase_avg.min(), T_phase_avg.max(), 50)
+                    E_phase_fit_rel = slope_ph_avg * T_phase_fit + intercept_ph_avg
+                    
+                    ax10.plot(T_phase_fit, E_phase_fit_rel, '-', color=color, 
+                             linewidth=2.5, alpha=0.9, 
+                             label=f'{phase} 拟合 (R^2={R2_ph_avg:.4f})', zorder=3)
+                    
+                    # 输出分区拟合结果
+                    print(f"  [分区拟合] {phase}: Cv={Cv_ph_avg:.4f}±{Cv_ph_avg_err:.4f} meV/K, R^2={R2_ph_avg:.4f}, n_temps={len(T_phase_avg)}, T={T_phase_avg.min():.0f}-{T_phase_avg.max():.0f}K")
+            
+            ax10.set_xlabel('Temperature (K)', fontsize=11, fontweight='bold')
+            ax10.set_ylabel('ΔE_cluster (eV)', fontsize=11, fontweight='bold')
+            ax10.set_title('(k) 整体拟合 vs 分区拟合对比\nOverall Fit vs Partitioned Fit', 
+                         fontsize=11, fontweight='bold')
+            ax10.legend(fontsize=7, loc='best', ncol=2)
+            ax10.grid(True, alpha=0.3)
+            
+            # 添加热容对比信息（使用按温度平均数据的拟合结果，带误差）
+            cv_info = f'整体拟合:\n  Cv={Cv_overall:.3f}±{Cv_overall_err:.3f} meV/K\n  $R^2$={R2_overall:.4f}\n\n分区拟合:\n'
+            for phase in phase_avg_fits.keys():
+                fit = phase_avg_fits[phase]
+                cv_info += f'  {phase}: Cv={fit["Cv"]:.3f}±{fit["Cv_err"]:.3f}\n         $R^2$={fit["R2"]:.4f}\n'
+            
+            ax10.text(0.02, 0.98, cv_info.strip(),
+                     transform=ax10.transAxes, fontsize=7, verticalalignment='top',
+                     bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
+            
+            # 输出整体拟合结果
+            print(f"  [整体拟合-按温度平均] Cv_overall={Cv_overall:.4f}±{Cv_overall_err:.4f} meV/K, R^2={R2_overall:.4f}, n_temps={len(T_all)}")
+            
+            # ===== 新增：子图12 (l): 分相态热容柱状图（基于按温度平均数据，模仿图i） =====
+            ax11 = fig.add_subplot(gs[row_offset+3, 2])
+            
+            if phase_avg_fits:
+                phases_with_fit = []
+                cv_values_avg = []
+                cv_errors_avg = []
+                colors_list_avg = []
+                
+                # 根据实际存在的相态绘图
+                for phase in phase_avg_fits.keys():
+                    phases_with_fit.append(phase)
+                    fit = phase_avg_fits[phase]
+                    cv_values_avg.append(fit['Cv'])
+                    cv_errors_avg.append(fit['Cv_err'])
+                    colors_list_avg.append(colors_phase.get(phase, '#95a5a6'))
+                
+                x_pos = np.arange(len(phases_with_fit))
+                bars = ax11.bar(x_pos, cv_values_avg, yerr=cv_errors_avg, 
+                               color=colors_list_avg, alpha=0.7, capsize=5,
+                               edgecolor='black', linewidth=1.5)
+                
+                # 添加数值标签（包含误差和质量评级）
+                for i, (phase, val) in enumerate(zip(phases_with_fit, cv_values_avg)):
+                    fit = phase_avg_fits[phase]
+                    error = cv_errors_avg[i]
+                    r2 = fit['R2']
+                    n_temps = fit['n_temps']
+                    
+                    # 质量评级（基于R²）
+                    if r2 > 0.95:
+                        grade = "★★★"
+                    elif r2 > 0.90:
+                        grade = "★★"
+                    elif r2 > 0.80:
+                        grade = "★"
+                    else:
+                        grade = "⚠"
+                    
+                    # 在柱子上方显示详细信息
+                    ax11.text(i, val + error + 0.3, 
+                            f'{val:.3f}±{error:.3f}\n(n={n_temps}, $R^2$={r2:.4f} {grade})',
+                            ha='center', va='bottom', fontsize=8, fontweight='bold')
+                
+                ax11.set_xticks(x_pos)
+                ax11.set_xticklabels(phases_with_fit)
+                ax11.set_ylabel('Cv_cluster (meV/K)', fontsize=11, fontweight='bold')
+                ax11.set_title('(l) 分相态团簇热容 (按温度平均-多数投票)\nPartitioned Cv (per-T averaged, majority vote)', 
+                              fontsize=11, fontweight='bold')
+                ax11.grid(axis='y', alpha=0.3)
+                
+                # 添加说明
+                ax11.text(0.02, 0.98, '基于按温度平均数据\n多数投票规则避免交叉',
+                        transform=ax11.transAxes, fontsize=8, verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7))
             else:
-                ax10.text(0.5, 0.5, 'Not enough data points', 
-                         ha='center', va='center', fontsize=12)
-                ax10.axis('off')
+                ax11.text(0.5, 0.5, 'No valid fits', ha='center', va='center', fontsize=12)
+                ax11.axis('off')
         else:
-            ax10.text(0.5, 0.5, 'Support energy data not available', 
+            ax10.text(0.5, 0.5, 'Not enough data points', 
                      ha='center', va='center', fontsize=12)
             ax10.axis('off')
     

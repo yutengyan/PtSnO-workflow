@@ -64,7 +64,8 @@ def load_quality_metrics(results_dir):
 def calculate_single_partition_r2(results_dir, structure):
     """计算1分区（整体线性拟合）的R²
     
-    从clustered_data.csv读取原始数据，进行整体线性拟合
+    从clustered_data.csv读取原始数据，进行整体能量-温度线性拟合
+    与2/3分区的热容R²保持一致的比较基准
     """
     results_dir = Path(results_dir)
     
@@ -75,22 +76,23 @@ def calculate_single_partition_r2(results_dir, structure):
         if data_file.exists():
             try:
                 df = pd.read_csv(data_file)
-                # 检查温度和Lindemann列名
+                # 检查温度和能量列名
                 temp_col = 'temperature' if 'temperature' in df.columns else 'temp'
-                lind_col = 'lindemann_index' if 'lindemann_index' in df.columns else 'delta'
+                energy_col = 'avg_energy' if 'avg_energy' in df.columns else 'energy'
                 
-                if temp_col in df.columns and lind_col in df.columns:
-                    # 使用温度和Lindemann指数做线性拟合
-                    x = df[temp_col].values
-                    y = df[lind_col].values
+                if temp_col in df.columns and energy_col in df.columns:
+                    # 按温度平均后拟合（与2/3分区保持一致）
+                    df_avg = df.groupby(temp_col).agg({energy_col: 'mean'}).reset_index()
+                    x = df_avg[temp_col].values
+                    y = df_avg[energy_col].values
                     
-                    # 线性回归
+                    # 线性回归 (温度 vs 能量)
                     slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
                     r2 = r_value ** 2
                     
                     return {
                         'r2': r2,
-                        'slope': slope,
+                        'slope': slope,  # Cv = slope * 1000 meV/K
                         'intercept': intercept,
                         'n_points': len(x)
                     }
@@ -190,8 +192,11 @@ def calculate_comprehensive_score(df):
             
             result['cv_diffs'] = cv_diffs
             
-            # 如果有任何相邻分区的热容差异不显著，标记
-            if len(cv_values) == 3:  # 3分区
+            # 对于2分区和3分区都计算热容差异显著性
+            if len(cv_values) == 2:  # 2分区
+                result['cv_diff_significant'] = cv_diffs[0]['significant']
+                result['cv_diff_ratio'] = cv_diffs[0]['ratio']
+            elif len(cv_values) == 3:  # 3分区
                 # 检查partition2和partition3的差异
                 last_diff = cv_diffs[-1]
                 result['cv_diff_significant'] = last_diff['significant']
@@ -262,6 +267,9 @@ def analyze_all_structures(results_dir):
                 result['auto2_silhouette'] = metrics2['silhouette']
                 result['auto2_error_ratio'] = metrics2['cv_error_ratio']
                 result['auto2_cv_values'] = metrics2.get('cv_values', [])
+                result['auto2_cv_errors'] = metrics2.get('cv_errors', [])
+                result['auto2_cv_diff_significant'] = metrics2.get('cv_diff_significant', True)
+                result['auto2_cv_diff_ratio'] = metrics2.get('cv_diff_ratio', None)
         
         # 分析3分区
         if 'auto3' in partitions:
@@ -287,62 +295,66 @@ def analyze_all_structures(results_dir):
         result['score_diff'] = result['auto2_score'] - result['auto3_score']
         result['r2_diff'] = result['auto2_avg_r2'] - result['auto3_avg_r2']
         
-        # 决策逻辑 - 加入1分区基准判断和热容差异显著性
+        # 决策逻辑 - 综合考虑R²、热容差异显著性和综合得分
         if result['auto2_score'] > 0 and result['auto3_score'] > 0:
             score_diff = result['score_diff']
             
-            # 首先判断分区是否有意义
-            # 如果2分区R²相对于1分区提升不足2%，分区可能意义不大
-            if result['n1_r2'] > 0 and result['n2_r2_gain'] < 0.02:
-                result['partition_meaningful'] = False
-                result['recommendation'] = '1分区'
-                result['confidence'] = 'high' if result['n2_r2_gain'] < 0.01 else 'medium'
-                result['reason'] = f'R²增益仅{result["n2_r2_gain"]:.4f}，分区意义不大'
+            # 获取2分区热容差异信息
+            auto2_cv_significant = result.get('auto2_cv_diff_significant', True)
+            auto2_cv_ratio = result.get('auto2_cv_diff_ratio', None)
             
-            # n=2显著更优 (得分差 > 5)
-            elif score_diff > 5:
-                result['recommendation'] = '2分区'
-                result['confidence'] = 'high'
-                result['reason'] = f'综合得分差={score_diff:+.1f}, n=2显著更优'
-            
-            # n=2略优 (2 < 得分差 <= 5)
-            elif score_diff > 2:
-                result['recommendation'] = '2分区'
-                result['confidence'] = 'medium'
-                result['reason'] = f'综合得分差={score_diff:+.1f}, n=2略优'
-            
-            # 差异不显著 (-2 <= 得分差 <= 2) - 默认n=2
-            elif score_diff >= -2:
-                result['recommendation'] = '2分区'
-                result['confidence'] = 'low'
-                result['reason'] = f'综合得分差={score_diff:+.1f}, 差异不显著,默认n=2'
-            
-            # n=3略优 (-5 <= 得分差 < -2)，但需检查热容差异显著性
-            elif score_diff >= -5:
-                # 新增：检查3分区的热容差异是否显著
-                if not result['auto3_cv_diff_significant']:
-                    result['recommendation'] = '2分区'
-                    result['confidence'] = 'medium'
-                    cv_ratio = result['auto3_cv_diff_ratio']
-                    ratio_str = f'{cv_ratio:.2f}' if cv_ratio else 'N/A'
-                    result['reason'] = f'n=3热容差异不显著(比值={ratio_str}<2),选n=2'
-                else:
-                    result['recommendation'] = '3分区'
-                    result['confidence'] = 'medium'
-                    result['reason'] = f'综合得分差={score_diff:+.1f}, n=3略优'
-            
-            # n=3显著更优 (得分差 < -5)，但仍需检查热容差异显著性
+            # 首先判断分区是否有意义：
+            # 1. 如果2分区热容差异显著 (ratio >= 2)，分区有物理意义
+            # 2. 如果热容差异不显著，但R²增益大，也可能有意义
+            if auto2_cv_significant and auto2_cv_ratio is not None and auto2_cv_ratio >= 2:
+                # 热容差异显著，分区有物理意义
+                result['partition_meaningful'] = True
+            elif result['n1_r2'] > 0 and result['n2_r2_gain'] >= 0.02:
+                # R²增益足够
+                result['partition_meaningful'] = True
             else:
-                if not result['auto3_cv_diff_significant']:
+                # 热容差异不显著 且 R²增益不足
+                result['partition_meaningful'] = False
+            
+            # 决策
+            if not result['partition_meaningful']:
+                result['recommendation'] = '1分区'
+                cv_ratio_str = f'{auto2_cv_ratio:.2f}' if auto2_cv_ratio else 'N/A'
+                result['confidence'] = 'high'
+                result['reason'] = f'热容差异不显著(比值={cv_ratio_str}),R²增益={result["n2_r2_gain"]:.4f}'
+            
+            else:
+                # 分区有意义，比较2分区 vs 3分区
+                # 核心判据：3分区的热容差异是否显著（partition2 vs partition3）
+                auto3_cv_significant = result.get('auto3_cv_diff_significant', True)
+                auto3_cv_ratio = result.get('auto3_cv_diff_ratio', None)
+                
+                # 如果3分区热容差异不显著，直接选2分区
+                if not auto3_cv_significant:
                     result['recommendation'] = '2分区'
-                    result['confidence'] = 'medium'
-                    cv_ratio = result['auto3_cv_diff_ratio']
-                    ratio_str = f'{cv_ratio:.2f}' if cv_ratio else 'N/A'
-                    result['reason'] = f'n=3热容差异不显著(比值={ratio_str}<2),选n=2'
-                else:
-                    result['recommendation'] = '3分区'
                     result['confidence'] = 'high'
-                    result['reason'] = f'综合得分差={score_diff:+.1f}, n=3显著更优'
+                    ratio_str = f'{auto3_cv_ratio:.2f}' if auto3_cv_ratio else 'N/A'
+                    result['reason'] = f'3分区热容差异不显著(比值={ratio_str}<2),选n=2'
+                
+                # 3分区热容差异显著，根据综合得分决定
+                elif score_diff > 2:
+                    # n=2综合得分更优
+                    result['recommendation'] = '2分区'
+                    result['confidence'] = 'high' if score_diff > 5 else 'medium'
+                    result['reason'] = f'综合得分差={score_diff:+.1f}, n=2更优'
+                
+                elif score_diff >= -2:
+                    # 差异不显著，默认n=2（更简洁的模型）
+                    result['recommendation'] = '2分区'
+                    result['confidence'] = 'low'
+                    result['reason'] = f'综合得分差={score_diff:+.1f}, 差异不显著,默认n=2'
+                
+                else:
+                    # n=3综合得分更优，且热容差异显著
+                    result['recommendation'] = '3分区'
+                    result['confidence'] = 'high' if score_diff < -5 else 'medium'
+                    ratio_str = f'{auto3_cv_ratio:.2f}' if auto3_cv_ratio else 'N/A'
+                    result['reason'] = f'综合得分差={score_diff:+.1f}, 3分区热容显著(比值={ratio_str})'
         
         elif result['auto2_score'] > 0:
             result['recommendation'] = '2分区'
@@ -413,18 +425,26 @@ def generate_report(analysis_results, output_path):
 
 ## 📊 1分区 vs 2分区 vs 3分区 R² 对比
 
-| 分区数 | 平均R² | 相对1分区提升 | 说明 |
-|--------|--------|---------------|------|
-| **n=1 (整体拟合)** | {avg_r2_n1:.4f} | - | 基准线 |
-| **n=2** | {avg_r2_n2:.4f} | +{avg_n2_gain:.4f} ({100*avg_n2_gain:.2f}%) | 主流选择 |
-| **n=3** | {avg_r2_n3:.4f} | +{avg_n3_gain:.4f} ({100*avg_n3_gain:.2f}%) | 更复杂模型 |
+**⚠️ R²含义说明**：
+- **n=1 R²**: 对所有温度点整体线性拟合（温度 vs 平均能量）的R²
+- **n=2/n=3 R²**: 分区后，每个分区内部线性拟合的**平均R²**
 
-### 分区意义评估
+由于n=1是全局拟合，n=2/n=3是局部拟合，两者R²不能直接比较！
+
+| 分区数 | 平均R² | R²差异 | 说明 |
+|--------|--------|--------|------|
+| **n=1 (整体拟合)** | {avg_r2_n1:.4f} | - | 全局线性拟合 |
+| **n=2** | {avg_r2_n2:.4f} | {avg_n2_gain:+.4f} | 分区后局部拟合平均 |
+| **n=3** | {avg_r2_n3:.4f} | {avg_n3_gain:+.4f} | 分区后局部拟合平均 |
+
+### 分区意义评估（基于热容差异显著性）
+
+**核心判据**：2分区的两个分区热容差异是否统计显著（|Cv₁-Cv₂| / √(err₁²+err₂²) ≥ 2）
 
 | 评估结果 | 数量 | 占比 | 说明 |
 |----------|------|------|------|
-| **分区有意义** | {partition_meaningful} | {100*partition_meaningful/total:.1f}% | 2分区R²增益 ≥ 2% |
-| 分区意义不大 | {partition_not_meaningful} | {100*partition_not_meaningful/total:.1f}% | 2分区R²增益 < 2% |
+| **分区有意义** | {partition_meaningful} | {100*partition_meaningful/total:.1f}% | 热容差异显著性比值 ≥ 2 |
+| 分区意义不大 | {partition_not_meaningful} | {100*partition_not_meaningful/total:.1f}% | 热容差异显著性比值 < 2 |
 
 ---
 
@@ -472,8 +492,14 @@ def generate_report(analysis_results, output_path):
 
 ## 📋 完整分区推荐表
 
-| 体系 | 推荐 | 置信度 | n1 R² | n2 R² | n3 R² | n2增益 | n2得分 | n3得分 | 得分差 | 理由 |
-|------|------|--------|-------|-------|-------|--------|--------|--------|--------|------|
+**列说明**：
+- **n1 R²**: 整体线性拟合R²（全局）
+- **n2 R²**: 2分区各自拟合的平均R²（局部）
+- **n2-n1**: n2 R² - n1 R²（通常为负，因为局部拟合R²通常低于全局）
+- **得分差**: n2综合得分 - n3综合得分（正值表示n=2更优）
+
+| 体系 | 推荐 | 置信度 | n1 R² | n2 R² | n3 R² | n2-n1 | n2得分 | n3得分 | 得分差 | 理由 |
+|------|------|--------|-------|-------|-------|-------|--------|--------|--------|------|
 """
     
     # 按得分差排序（n=2更优的排前面）
@@ -481,8 +507,8 @@ def generate_report(analysis_results, output_path):
         conf_icon = {'high': '🟢', 'medium': '🟡', 'low': '⚪'}.get(r['confidence'], '⚪')
         rec = '**2分区**' if r['recommendation'] == '2分区' else ('1分区' if r['recommendation'] == '1分区' else '3分区')
         n1_r2 = f"{r['n1_r2']:.4f}" if r['n1_r2'] > 0 else 'N/A'
-        n2_gain = f"+{r['n2_r2_gain']:.4f}" if r['n1_r2'] > 0 else 'N/A'
-        report += f"| {r['structure']} | {rec} | {conf_icon} | {n1_r2} | {r['auto2_avg_r2']:.4f} | {r['auto3_avg_r2']:.4f} | {n2_gain} | {r['auto2_score']:.1f} | {r['auto3_score']:.1f} | {r['score_diff']:+.1f} | {r['reason']} |\n"
+        n2_diff = f"{r['n2_r2_gain']:+.4f}" if r['n1_r2'] > 0 else 'N/A'
+        report += f"| {r['structure']} | {rec} | {conf_icon} | {n1_r2} | {r['auto2_avg_r2']:.4f} | {r['auto3_avg_r2']:.4f} | {n2_diff} | {r['auto2_score']:.1f} | {r['auto3_score']:.1f} | {r['score_diff']:+.1f} | {r['reason']} |\n"
     
     # 分区意义分析
     report += """
@@ -490,15 +516,19 @@ def generate_report(analysis_results, output_path):
 
 ## 🔍 分区意义分析
 
-### 分区意义不大的体系 (R²增益 < 2%)
+### 分区意义不大的体系（热容差异不显著）
+
+**判断标准**: 2分区的热容差异显著性比值 = |Cv₁-Cv₂| / √(err₁²+err₂²) < 2
 
 """
     not_meaningful = [r for r in analysis_results if not r['partition_meaningful']]
     if not_meaningful:
-        report += "| 体系 | n1 R² | n2 R² | R²增益 | 说明 |\n"
-        report += "|------|-------|-------|--------|------|\n"
-        for r in sorted(not_meaningful, key=lambda x: x['n2_r2_gain']):
-            report += f"| {r['structure']} | {r['n1_r2']:.4f} | {r['auto2_avg_r2']:.4f} | {r['n2_r2_gain']:.4f} | 增益不足，分区意义不大 |\n"
+        report += "| 体系 | n1 R² | n2 R² | 热容差异比值 | 说明 |\n"
+        report += "|------|-------|-------|--------------|------|\n"
+        for r in sorted(not_meaningful, key=lambda x: x.get('auto2_cv_diff_ratio', 0) or 0):
+            cv_ratio = r.get('auto2_cv_diff_ratio', None)
+            cv_ratio_str = f"{cv_ratio:.2f}" if cv_ratio is not None else 'N/A'
+            report += f"| {r['structure']} | {r['n1_r2']:.4f} | {r['auto2_avg_r2']:.4f} | {cv_ratio_str} | 热容差异不显著，分区无物理意义 |\n"
     else:
         report += "*所有体系的分区都有意义*\n"
 
@@ -516,8 +546,8 @@ def generate_report(analysis_results, output_path):
         pt8_n2_better = sum(1 for r in pt8_systems if r['score_diff'] > 0)
         pt8_meaningful = sum(1 for r in pt8_systems if r['partition_meaningful'])
         report += f"**统计**: n=2更优 {pt8_n2_better}/{len(pt8_systems)} ({100*pt8_n2_better/len(pt8_systems):.1f}%), 分区有意义 {pt8_meaningful}/{len(pt8_systems)}\n\n"
-        report += "| 体系 | 推荐 | n2增益 | 得分差 | R²差 | 置信度 |\n"
-        report += "|------|------|--------|--------|------|--------|\n"
+        report += "| 体系 | 推荐 | n2-n1差 | 得分差 | R²差 | 置信度 |\n"
+        report += "|------|------|---------|--------|------|--------|\n"
         for r in sorted(pt8_systems, key=lambda x: x['structure']):
             conf_icon = {'high': '🟢', 'medium': '🟡', 'low': '⚪'}.get(r['confidence'], '⚪')
             n2_gain = f"{r['n2_r2_gain']:.4f}" if r['n1_r2'] > 0 else 'N/A'
@@ -532,12 +562,12 @@ def generate_report(analysis_results, output_path):
         pt6_n2_better = sum(1 for r in pt6_systems if r['score_diff'] > 0)
         pt6_meaningful = sum(1 for r in pt6_systems if r['partition_meaningful'])
         report += f"**统计**: n=2更优 {pt6_n2_better}/{len(pt6_systems)} ({100*pt6_n2_better/len(pt6_systems):.1f}%), 分区有意义 {pt6_meaningful}/{len(pt6_systems)}\n\n"
-        report += "| 体系 | 推荐 | n2增益 | 得分差 | R²差 | 置信度 |\n"
-        report += "|------|------|--------|--------|------|--------|\n"
+        report += "| 体系 | 推荐 | n2-n1差 | 得分差 | R²差 | 置信度 |\n"
+        report += "|------|------|---------|--------|------|--------|\n"
         for r in sorted(pt6_systems, key=lambda x: x['structure']):
             conf_icon = {'high': '🟢', 'medium': '🟡', 'low': '⚪'}.get(r['confidence'], '⚪')
-            n2_gain = f"{r['n2_r2_gain']:.4f}" if r['n1_r2'] > 0 else 'N/A'
-            report += f"| {r['structure']} | {r['recommendation']} | {n2_gain} | {r['score_diff']:+.1f} | {r['r2_diff']:+.4f} | {conf_icon} |\n"
+            n2_diff = f"{r['n2_r2_gain']:+.4f}" if r['n1_r2'] > 0 else 'N/A'
+            report += f"| {r['structure']} | {r['recommendation']} | {n2_diff} | {r['score_diff']:+.1f} | {r['r2_diff']:+.4f} | {conf_icon} |\n"
 
     report += """
 ### 其他系列
@@ -550,12 +580,12 @@ def generate_report(analysis_results, output_path):
         other_n2_better = sum(1 for r in other_systems if r['score_diff'] > 0)
         other_meaningful = sum(1 for r in other_systems if r['partition_meaningful'])
         report += f"**统计**: n=2更优 {other_n2_better}/{len(other_systems)} ({100*other_n2_better/len(other_systems):.1f}%), 分区有意义 {other_meaningful}/{len(other_systems)}\n\n"
-        report += "| 体系 | 推荐 | n2增益 | 得分差 | R²差 | 置信度 |\n"
-        report += "|------|------|--------|--------|------|--------|\n"
+        report += "| 体系 | 推荐 | n2-n1差 | 得分差 | R²差 | 置信度 |\n"
+        report += "|------|------|---------|--------|------|--------|\n"
         for r in sorted(other_systems, key=lambda x: x['structure']):
             conf_icon = {'high': '🟢', 'medium': '🟡', 'low': '⚪'}.get(r['confidence'], '⚪')
-            n2_gain = f"{r['n2_r2_gain']:.4f}" if r['n1_r2'] > 0 else 'N/A'
-            report += f"| {r['structure']} | {r['recommendation']} | {n2_gain} | {r['score_diff']:+.1f} | {r['r2_diff']:+.4f} | {conf_icon} |\n"
+            n2_diff = f"{r['n2_r2_gain']:+.4f}" if r['n1_r2'] > 0 else 'N/A'
+            report += f"| {r['structure']} | {r['recommendation']} | {n2_diff} | {r['score_diff']:+.1f} | {r['r2_diff']:+.4f} | {conf_icon} |\n"
 
     report += f"""
 ---
@@ -568,61 +598,55 @@ def generate_report(analysis_results, output_path):
 - **1分区** = 整体线性拟合，没有聚类，只有R²
 - **2/3分区** = K-means聚类 + 分段线性拟合，有完整的综合得分（R² + Silhouette + 误差）
 
-因此，我们采用**三阶段决策**：
+因此，我们采用**三阶段决策**（核心：热容差异显著性检验）：
 
-### 第一阶段：判断分区是否有意义 (n=2 vs n=1)
+### 第一阶段：计算1分区整体拟合R²
 
-仅比较R²（因为1分区没有聚类质量）：
+对所有数据进行整体线性拟合（温度 vs 平均能量），计算R²作为基准。
 
-| R²增益 (n2-n1) | 判定 | 理由 |
-|----------------|------|------|
-| 增益 < 2% | 推荐n=1 | 分区带来的拟合改善太小，不值得增加复杂度 |
-| 增益 ≥ 2% | 分区有意义 | 继续比较n=2 vs n=3 |
+### 第二阶段：判断2分区是否有物理意义 (n=1 vs n=2)
 
-### 第二阶段：n=2 vs n=3 综合得分比较
+**热容差异显著性检验**：
 
-使用综合得分（R² 50% + Silhouette 30% + 误差 20%）：
-
-| 得分差范围 | 初步判定 | 置信度 |
-|------------|----------|--------|
-| diff > 5 | n=2显著更优 | 🟢 高 |
-| 2 < diff ≤ 5 | n=2略优 | 🟡 中 |
-| -2 ≤ diff ≤ 2 | 默认n=2 | ⚪ 低 |
-| -5 ≤ diff < -2 | 初步判定n=3 | 🟡 需检验 |
-| diff < -5 | 初步判定n=3 | 🟢 需检验 |
-
-### 第三阶段：3分区热容差异显著性检验 (新增!)
-
-**核心思想**：如果partition2和partition3的热容差异不显著，说明分3区没有物理意义。
-
-判断标准：
-- **热容差异** = |Cv_partition3 - Cv_partition2|
-- **合并误差** = √(err₂² + err₃²)
-- **显著性比值** = 热容差异 / 合并误差
+$$\\text{{显著性比值}} = \\frac{{|Cv_1 - Cv_2|}}{{\\sqrt{{err_1^2 + err_2^2}}}}$$
 
 | 显著性比值 | 判定 | 理由 |
 |------------|------|------|
-| 比值 < 2 | 差异不显著，改选n=2 | 热容差异在误差范围内 |
-| 比值 ≥ 2 | 差异显著，保持n=3 | 热容差异在统计上显著 |
+| **比值 < 2** | 推荐n=1 | 2分区热容差异不显著，分区无物理意义 |
+| **比值 ≥ 2** | 继续第三阶段 | 热容差异显著，需判断2分区还是3分区 |
 
-### 💡 为什么需要热容差异检验？
+### 第三阶段：判断3分区是否有物理意义 (n=2 vs n=3)
 
-如您所见的图片例子：
-- partition2: Cv = 1.76 ± 0.03
-- partition3: Cv = 2.43 ± 0.57
+**同样使用热容差异显著性检验**：
 
-虽然看起来有差异，但partition3的误差很大(±0.57)，
-实际上差异(0.67)可能不显著！这说明分3区是**过度拟合**。
+$$\\text{{显著性比值}} = \\frac{{|Cv_2 - Cv_3|}}{{\\sqrt{{err_2^2 + err_3^2}}}}$$
 
-### 💡 为什么 n=2 更好？
+| 显著性比值 | 判定 | 理由 |
+|------------|------|------|
+| **比值 < 2** | 推荐n=2 | 3分区的第2、3区热容差异不显著 |
+| **比值 ≥ 2** | 结合综合得分 | 热容差异显著，根据综合得分选择 |
 
-| 指标 | n=2 | n=3 | 结论 |
-|------|-----|-----|------|
-| **平均R²** | 0.929 | 0.908 | n=2更高 |
-| **Silhouette** | 0.552 | 0.536 | n=2更高 |
-| **综合得分** | 87.7 | 83.7 | n=2更高 |
+### 💡 统一的热容差异检验原则
 
-分区越多，R²和Silhouette反而下降，说明数据本身只有2个自然聚类。
+无论是1→2分区还是2→3分区，核心判据都是：
+
+> **热容差异 / 合并误差 ≥ 2** → 分区有物理意义
+
+这确保了：
+1. 每次增加分区数，都必须带来**统计显著的热容差异**
+2. 避免过度拟合（分区越多但热容差异不显著）
+
+### � 示例
+
+**Air68体系**（推荐1分区）：
+- 2分区热容: Cv₁ = 1.23 ± 0.05, Cv₂ = 1.35 ± 0.08
+- 显著性比值 = |1.35-1.23| / √(0.05²+0.08²) = 0.12/0.094 = **0.71 < 2**
+- 结论：热容差异不显著，分区无意义
+
+**Pt8sn6体系**（推荐2分区）：
+- 2分区热容差异显著（比值 ≥ 2）
+- 3分区热容差异不显著（比值 < 2）
+- 结论：2分区有物理意义，3分区无必要
 
 ---
 
@@ -653,7 +677,7 @@ python step6_1_clustering_analysis.py -s <结构名> -n 2 --use-d-value
 
 
 def main():
-    results_dir = Path(__file__).parent / 'results' / 'step7_4_2_clustering'
+    results_dir = Path(__file__).parent / 'results' / 'step6_1_clustering'
     output_path = results_dir / 'PARTITION_RECOMMENDATION_REPORT.md'
     
     print("=" * 70)

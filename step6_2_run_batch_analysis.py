@@ -4,7 +4,7 @@
 Author: Yutengyan 1120798743@qq.com
 Date: 2025-10-28 11:59:33
 LastEditors: yutengyan 1120798743@qq.com
-LastEditTime: 2025-11-28 19:18:43
+LastEditTime: 2025-11-29 10:31:34
 FilePath: step6_2_run_batch_analysis.py
 Description: 批量运行所有Pt-Sn结构的聚类分析
 '''
@@ -17,7 +17,10 @@ import sys
 from datetime import datetime
 
 structures = [
-    # Cv系列 (Pt6Sn8O4, 即 g-1535-Sn8Pt6O4)
+    # Air系列 (气相纳米团簇) - 不需要扣除载体热容
+    "Air68", "Air86",
+    
+    # # Cv系列 (Pt6Sn8O4, 即 g-1535-Sn8Pt6O4)
     "Cv",
     # PtxSnyOz系列
     "O2pt4sn6", "O2pt7sn7", "O2sn8pt7", "O3pt5sn7", "O3sn4pt2",
@@ -84,7 +87,7 @@ def main():
         for f in failed:
             print(f"  - {f}")
     
-    print("\n所有结果保存在: results/step7_4_2_clustering/")
+    print("\n所有结果保存在: results/step6_1_clustering/")
     print("=" * 80)
 
 if __name__ == "__main__":

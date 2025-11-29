@@ -368,10 +368,24 @@ LINDEMANN_THRESHOLDS = {
 
 # File paths
 BASE_DIR = Path(__file__).parent
+
+# ============================================================================
+# 输入数据文件配置
+# ============================================================================
+
+# 主数据集 (负载型纳米团簇)
 CLUSTER_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'energy_master_20251016_121110.csv'
+LINDEMANN_FILE = BASE_DIR / 'data' / 'lindemann' / 'lin-for-all-but-every-ele' / 'lindemann_master_run_20251113_195434.csv'
+
+# Air数据集 (气相纳米团簇: 68, 86)
+AIR_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'lammps_energy_analysis-air' / 'energy_master_20251124_152416.csv'
+AIR_LINDEMANN_FILE = BASE_DIR / 'data' / 'lindemann' / 'collected_lindemann_cluster-lin20251124-air' / 'lindemann_master_run_20251124_164914.csv'
+
+# 载体数据
 SUPPORT_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'sup' / 'energy_master_20251021_151520.csv'
-LINDEMANN_DIR = BASE_DIR / 'data' / 'lindemann'
-RESULTS_DIR = BASE_DIR / 'results' / 'step7_4_multi_system'
+
+# 输出目录
+RESULTS_DIR = BASE_DIR / 'results' / 'step6_0_multi_system'
 
 # Step 1 filtering results
 OUTLIERS_FILE = BASE_DIR / 'results' / 'large_D_outliers.csv'
@@ -390,8 +404,14 @@ def detect_system_type(structure_name):
         'pt6sn3' -> ('Pt6SnX', 'Pt6Sn3')
         'pt3sn5' -> ('PtxSny', 'Pt3Sn5')
         'Pt5Sn3O1' -> ('PtxSnyOz', 'Pt5Sn3O1')
+        '68' -> ('Air', 'Air68')  # 气相纳米团簇
+        '86' -> ('Air', 'Air86')  # 气相纳米团簇
     """
-    name = structure_name.strip()
+    name = str(structure_name).strip()
+    
+    # Air series (气相纳米团簇: 68, 86)
+    if name in ['68', '86']:
+        return ('Air', f'Air{name}')
     
     # Cv series - MERGE ALL Cv-1, Cv-2, ..., Cv-5 into single 'Cv' system
     # These are repeat simulations of the same structure (Sn8Pt6O4)
@@ -725,22 +745,38 @@ def load_energy_data(energy_file, system_filter=None, file_type='cluster'):
         energy_file: path to energy CSV file
         system_filter: list of system types to filter (e.g., ['Cv', 'Pt8SnX'])
                       None means load all systems
-        file_type: 'cluster' or 'support'
+        file_type: 'cluster', 'support', or 'air'
     """
     print(f"\n>>> Loading {file_type} energy data: {energy_file.name}")
     df = pd.read_csv(energy_file, encoding='utf-8')
     
-    # Handle different column formats
+    # Handle different column formats - Air文件有15列，包括e_squared和delta_e_squared
     if '结构' in df.columns:
-        df.columns = ['path', 'structure', 'temp', 'run_num', 'total_steps', 'sample_steps', 
-                      'avg_energy', 'std', 'min', 'max', 'sample_interval', 
-                      'skip_steps', 'full_path']
+        # 检查列数以确定格式
+        if len(df.columns) == 15:
+            # 完整的15列格式 (包含 e_squared 和 delta_e_squared)
+            df.columns = ['path', 'structure', 'temp', 'run_num', 'total_steps', 'sample_steps', 
+                          'avg_energy', 'std', 'min', 'max', 'e_squared', 'delta_e_squared',
+                          'sample_interval', 'skip_steps', 'full_path']
+        else:
+            # 标准的13列格式
+            df.columns = ['path', 'structure', 'temp', 'run_num', 'total_steps', 'sample_steps', 
+                          'avg_energy', 'std', 'min', 'max', 'sample_interval', 
+                          'skip_steps', 'full_path']
     else:
-        # Already in English
-        expected_cols = ['path', 'structure', 'temp', 'run_num', 'total_steps', 'sample_steps', 
-                        'avg_energy', 'std', 'min', 'max', 'sample_interval', 
-                        'skip_steps', 'full_path']
+        # Already in English - 根据列数处理
+        if len(df.columns) == 15:
+            expected_cols = ['path', 'structure', 'temp', 'run_num', 'total_steps', 'sample_steps', 
+                            'avg_energy', 'std', 'min', 'max', 'e_squared', 'delta_e_squared',
+                            'sample_interval', 'skip_steps', 'full_path']
+        else:
+            expected_cols = ['path', 'structure', 'temp', 'run_num', 'total_steps', 'sample_steps', 
+                            'avg_energy', 'std', 'min', 'max', 'sample_interval', 
+                            'skip_steps', 'full_path']
         df.columns = expected_cols[:len(df.columns)]
+    
+    # 确保structure列是字符串类型
+    df['structure'] = df['structure'].astype(str)
     
     # Detect system types
     df[['system_type', 'system_id']] = df['structure'].apply(
@@ -753,9 +789,23 @@ def load_energy_data(energy_file, system_filter=None, file_type='cluster'):
         print(f"    Filter applied: {system_filter}")
     
     # Create matching key
-    df['match_key'] = df.apply(
-        lambda row: normalize_path(row['full_path'], row['system_type'], row['structure']), axis=1
-    )
+    if file_type == 'air':
+        # Air数据使用简化的key: structure_temp_run_num
+        def make_air_key(row):
+            struct = row['structure']
+            temp = row['temp']
+            full_path = row.get('full_path', '')
+            run_num = row.get('run_num', 0)
+            if full_path:
+                run_info = full_path.split('/')[-1]
+            else:
+                run_info = f'r{run_num}'
+            return f"{struct}_{temp}_{run_info}"
+        df['match_key'] = df.apply(make_air_key, axis=1)
+    else:
+        df['match_key'] = df.apply(
+            lambda row: normalize_path(row['full_path'], row['system_type'], row['structure']), axis=1
+        )
     df = df[df['match_key'].notna()]
     
     # Print system distribution
@@ -777,23 +827,13 @@ def load_lindemann_individual_runs(system_filter=None):
     """
     print(f"\n>>> Loading Lindemann individual run data")
     
-    # Use the latest Lindemann data (version 3: 2025-11-13)
-    # This is the most up-to-date version with 99.9% consistency with version 2
-    lindemann_file = LINDEMANN_DIR / 'lin-for-all-but-every-ele' / 'lindemann_master_run_20251113_195434.csv'
-    
-    if lindemann_file.exists():
-        lindemann_files = [lindemann_file]
-        print(f"    [✓] Using latest Lindemann data (v3, 2025-11-13)")
-        print(f"    File: {lindemann_file.name}")
+    # 使用配置的林德曼数据文件 (v3: 2025-11-13)
+    if LINDEMANN_FILE.exists():
+        lindemann_files = [LINDEMANN_FILE]
+        print(f"    [✓] Using Lindemann data: {LINDEMANN_FILE.name}")
     else:
-        # Fallback to old glob pattern if new file doesn't exist
-        print(f"    [!] Latest file not found: {lindemann_file}")
-        print(f"    [→] Falling back to glob pattern lindemann_master_run_*.csv")
-        lindemann_files = sorted(LINDEMANN_DIR.glob('lindemann_master_run_*.csv'))
-        if not lindemann_files:
-            print(f"    Error: No Lindemann files found in {LINDEMANN_DIR}")
-            return None
-        print(f"    Found {len(lindemann_files)} files")
+        print(f"    [ERROR] Lindemann file not found: {LINDEMANN_FILE}")
+        return None
     
     # Read and merge
     dfs = []
@@ -847,6 +887,67 @@ def load_lindemann_individual_runs(system_filter=None):
     # Print system distribution
     system_counts = df['system_type'].value_counts()
     print(f"    Loaded: {len(df)} records")
+    print(f"    System distribution:")
+    for sys_type, count in system_counts.items():
+        print(f"      - {sys_type}: {count} records")
+    
+    return df
+
+
+def load_lindemann_data_from_file(lindemann_file, system_filter=None):
+    """
+    从指定文件加载林德曼数据 (用于Air等额外数据集)
+    
+    Args:
+        lindemann_file: 林德曼数据文件路径
+        system_filter: 系统类型过滤器
+    
+    Returns:
+        DataFrame: 包含林德曼数据的DataFrame
+    """
+    print(f"\n>>> Loading Lindemann data from: {lindemann_file.name}")
+    
+    if not lindemann_file.exists():
+        print(f"    [ERROR] File not found: {lindemann_file}")
+        return None
+    
+    df = pd.read_csv(lindemann_file, encoding='utf-8')
+    print(f"    Loaded: {len(df)} records")
+    
+    # Map Chinese column names
+    col_mapping = {
+        '目录': 'directory',
+        '结构': 'structure',
+        '温度(K)': 'temp',
+        '体系类型': 'system_class',
+        'Lindemann指数': 'delta'
+    }
+    
+    if '目录' in df.columns:
+        df.rename(columns=col_mapping, inplace=True)
+    
+    # 确保structure列是字符串类型
+    df['structure'] = df['structure'].astype(str)
+    
+    # Detect system types
+    df[['system_type', 'system_id']] = df['structure'].apply(
+        lambda x: pd.Series(detect_system_type(x))
+    )
+    
+    # Filter by system if specified
+    if system_filter:
+        df = df[df['system_type'].isin(system_filter)].copy()
+        print(f"    Filter applied: {system_filter}")
+    
+    # Create matching key (对于Air数据，使用简化的key: structure_temp_run)
+    # Air数据的directory格式不同，需要特殊处理
+    df['match_key'] = df.apply(
+        lambda row: f"{row['structure']}_{row['temp']}_{row.get('directory', '').split('/')[-1] if row.get('directory') else 'unknown'}", 
+        axis=1
+    )
+    
+    # Print system distribution
+    system_counts = df['system_type'].value_counts()
     print(f"    System distribution:")
     for sys_type, count in system_counts.items():
         print(f"      - {sys_type}: {count} records")
@@ -1441,10 +1542,23 @@ def fit_regional_heat_capacity(df_data, Cv_support, structure_name=None):
         df_data: dataframe to analyze (can be filtered by structure)
         Cv_support: support heat capacity
         structure_name: specific structure name for display (None for all)
+    
+    Note:
+        对于 Air 系列 (气相纳米团簇)，不扣除载体热容 (Cv_support = 0)
     """
+    # Air系列是气相纳米团簇，不需要扣除载体热容
+    is_air_system = False
+    if structure_name:
+        # 检测是否为Air系列 (如 Air68, Air86, 68, 86)
+        if structure_name.startswith('Air') or structure_name in ['68', '86']:
+            is_air_system = True
+            Cv_support = 0.0  # Air系列不扣除载体热容
+    
     if structure_name:
         print(f"\n{'='*80}")
         print(f"Three-region heat capacity calculation: {structure_name}")
+        if is_air_system:
+            print(f"  [Note] Air系列(气相纳米团簇): Cv_support = 0 (不扣除载体热容)")
         print("="*80)
     else:
         print(f"\n{'='*80}")
@@ -1856,7 +1970,7 @@ def generate_system_comparison_report(df_merged, Cv_support):
     df_merged_export = df_merged.copy()
     df_merged_export['structure'] = df_merged_export['system_id']
     
-    csv_file = RESULTS_DIR / 'step7_4_all_systems_data.csv'
+    csv_file = RESULTS_DIR / 'step6_0_all_systems_data.csv'
     df_merged_export.to_csv(csv_file, index=False, encoding='utf-8-sig')
     print(f"    [OK] Data saved: {csv_file}")
     
@@ -2133,9 +2247,23 @@ Examples:
     print(f"Analysis level: Individual structures (system_id)")
     print(f"Note: Each structure (e.g., Cv-1, Pt8Sn3) analyzed separately\n")
     
-    # 1. Load data
+    # 1. Load main data (负载型纳米团簇)
     df_energy = load_energy_data(CLUSTER_ENERGY_FILE, system_filter, 'cluster')
     df_lindemann = load_lindemann_individual_runs(system_filter)
+    
+    # 1.1 Load Air data (气相纳米团簇: 68, 86)
+    if AIR_ENERGY_FILE.exists() and AIR_LINDEMANN_FILE.exists():
+        print("\n>>> Loading Air data (气相纳米团簇: 68, 86)")
+        df_energy_air = load_energy_data(AIR_ENERGY_FILE, None, 'air')
+        df_lindemann_air = load_lindemann_data_from_file(AIR_LINDEMANN_FILE)
+        
+        if df_energy_air is not None and df_lindemann_air is not None:
+            # 合并主数据和Air数据
+            df_energy = pd.concat([df_energy, df_energy_air], ignore_index=True)
+            df_lindemann = pd.concat([df_lindemann, df_lindemann_air], ignore_index=True)
+            print(f"    [OK] Air data merged: Energy={len(df_energy_air)}, Lindemann={len(df_lindemann_air)}")
+    else:
+        print("\n>>> Air data files not found, skipping...")
     
     if df_energy is None or df_lindemann is None:
         print("\nError: Data loading failed")
