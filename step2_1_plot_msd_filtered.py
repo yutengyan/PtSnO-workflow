@@ -57,8 +57,8 @@ from collections import defaultdict
 warnings.filterwarnings('ignore')
 
 # ===== 数据集选择配置 =====
-# 可选值: 'pt8sn6' 或 'air_86'
-DATASET = 'pt8sn6'  # 🔧 修改此处切换数据集
+# 可选值: 'pt8sn6', 'pt6sn8', 'air_86', 'air_68'
+DATASET = 'pt6sn8'  # 🔧 修改此处切换数据集
 
 # 数据集配置字典
 DATASET_CONFIGS = {
@@ -70,13 +70,29 @@ DATASET_CONFIGS = {
         'target_temps': ['300K', '900K'],
         'description': 'Pt8Sn6 负载型数据 (unwrap per-atom MSD)'
     },
+    'pt6sn8': {
+        'name': 'Pt6Sn8负载型',
+        'data_dir': 'data/gmx_msd/unwrap/gmx_msd_results_20251118_152614',
+        'output_dir': 'results/msd_curves_pt6sn8_loaded',
+        'system_pattern': r'^pt6sn8',
+        'target_temps': ['300K', '900K'],
+        'description': 'Pt6Sn8 负载型数据 (unwrap per-atom MSD)'
+    },
     'air_86': {
-        'name': '气象数据86',
+        'name': '气相Pt8Sn6',
         'data_dir': 'data/gmx_msd/unwrap/air/gmx_msd_results_20251124_170114',
         'output_dir': 'results/msd_curves_air_86',
         'system_pattern': r'^86$',
         'target_temps': ['300K', '900K'],
-        'description': '气象数据 86 系统 (atmospheric conditions)'
+        'description': '气相 Pt8Sn6 (Air-86)'
+    },
+    'air_68': {
+        'name': '气相Pt6Sn8',
+        'data_dir': 'data/gmx_msd/unwrap/air/gmx_msd_results_20251124_170114',
+        'output_dir': 'results/msd_curves_air_68',
+        'system_pattern': r'^68$',
+        'target_temps': ['300K', '900K'],
+        'description': '气相 Pt6Sn8 (Air-68)'
     }
 }
 

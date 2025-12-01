@@ -151,12 +151,14 @@ def plot_op2_comparison(air68_data, air86_data, temp, output_dir):
     # 创建图表 - 科研绘图尺寸 (11.5cm x 9cm)
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11.5/2.54, 9/2.54), sharex=True)
     
-    colors = {'air86': '#3498DB', 'air68': '#E74C3C'}
+    # 黑灰配色
+    line_color = '#333333'  # 深灰/黑色
+    fill_color = '#888888'  # 中灰色
     
     # === 上图: Air-86 ===
     ax1.fill_between(time_86, mean_86 - std_86, mean_86 + std_86, 
-                     alpha=0.3, color=colors['air86'])
-    ax1.plot(time_86, mean_86, color=colors['air86'], linewidth=1.5)
+                     alpha=0.3, color=fill_color)
+    ax1.plot(time_86, mean_86, color=line_color, linewidth=1.5)
     
     ax1.set_ylim(y_min, y_max)
     ax1.set_ylabel('OP2', fontsize=10, fontweight='bold')
@@ -165,8 +167,8 @@ def plot_op2_comparison(air68_data, air86_data, temp, output_dir):
     
     # === 下图: Air-68 ===
     ax2.fill_between(time_68, mean_68 - std_68, mean_68 + std_68, 
-                     alpha=0.3, color=colors['air68'])
-    ax2.plot(time_68, mean_68, color=colors['air68'], linewidth=1.5)
+                     alpha=0.3, color=fill_color)
+    ax2.plot(time_68, mean_68, color=line_color, linewidth=1.5)
     
     ax2.set_ylim(y_min, y_max)
     ax2.set_xlabel('Time (ps)', fontsize=10, fontweight='bold')
