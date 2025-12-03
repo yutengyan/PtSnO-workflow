@@ -134,13 +134,13 @@ def parse_composition(name):
     - Pt6sn8, pt8sn5, PT3SN5
     - Pt6sn8o4, O2pt4sn6, Sn6pt5o2
     - Air68, Air86
-    - Cv (返回 None)
+    - Cv, cv-1~5 -> Pt6Sn8O4
     """
     name_lower = name.lower().strip()
     
-    # 跳过 Cv
+    # Cv 系列: 实际对应 Pt6Sn8O4
     if name_lower in ['cv', 'cv-1', 'cv-2', 'cv-3', 'cv-4', 'cv-5']:
-        return None
+        return (6, 8, 4)  # Pt6Sn8O4
     
     # Air 系列: air68 -> Pt6Sn8, air86 -> Pt8Sn6
     if name_lower.startswith('air'):
@@ -275,6 +275,87 @@ def calculate_melting_point_lindemann(df_structure, threshold=0.1):
 
 
 # ============================================================================
+# 2.5 林德曼指数跃变点分析 (方法A2: dδ/dT 最大值)
+# ============================================================================
+
+def calculate_melting_point_transition(df_structure):
+    """
+    使用林德曼指数跃变点法计算熔点 (dδ/dT 最大值)
+    
+    物理意义：找到 δ(T) 曲线斜率最大的点，即熔化转变最剧烈的温度
+    
+    Args:
+        df_structure: 单个结构的数据
+    
+    Returns:
+        dict: {
+            'Tm_transition': 跃变点温度 (K),
+            'Tm_transition_err': 温度误差估计 (K),
+            'dDelta_dT_max': 最大斜率值,
+            'delta_at_transition': 跃变点处的 δ 值
+        }
+    """
+    from scipy.ndimage import gaussian_filter1d
+    
+    # 按温度分组计算平均 Lindemann 指数
+    df_avg = df_structure.groupby('temp').agg({
+        'delta': ['mean', 'std']
+    }).reset_index()
+    df_avg.columns = ['temp', 'delta_mean', 'delta_std']
+    df_avg = df_avg.sort_values('temp')
+    
+    temps = df_avg['temp'].values
+    deltas = df_avg['delta_mean'].values
+    
+    if len(temps) < 3:
+        return None
+    
+    # 平滑处理（高斯滤波），避免噪声影响
+    deltas_smooth = gaussian_filter1d(deltas, sigma=1)
+    
+    # 计算 dδ/dT (中心差分)
+    dT = np.diff(temps)
+    dDelta = np.diff(deltas_smooth)
+    dDelta_dT = dDelta / dT
+    
+    # 对应的温度点（取中点）
+    T_mid = (temps[:-1] + temps[1:]) / 2
+    
+    if len(dDelta_dT) == 0:
+        return None
+    
+    # 找最大斜率点
+    max_idx = np.argmax(dDelta_dT)
+    Tm_transition = T_mid[max_idx]
+    dDelta_dT_max = dDelta_dT[max_idx]
+    
+    # 估算误差（取相邻温度步长）
+    Tm_err = dT[max_idx] / 2 if max_idx < len(dT) else dT[-1] / 2
+    
+    # 插值获取跃变点处的 δ 值
+    f_interp = interp1d(temps, deltas_smooth, kind='linear', fill_value='extrapolate')
+    delta_at_transition = float(f_interp(Tm_transition))
+    
+    # 检查是否有明显的跃变（斜率阈值）
+    if dDelta_dT_max < 0.0001:  # 斜率太小，无明显跃变
+        return {
+            'Tm_transition': np.nan,
+            'Tm_transition_err': np.nan,
+            'dDelta_dT_max': dDelta_dT_max,
+            'delta_at_transition': np.nan,
+            'note': 'No significant transition detected'
+        }
+    
+    return {
+        'Tm_transition': Tm_transition,
+        'Tm_transition_err': Tm_err,
+        'dDelta_dT_max': dDelta_dT_max,
+        'delta_at_transition': delta_at_transition,
+        'method': 'transition'
+    }
+
+
+# ============================================================================
 # 3. 聚类分区边界熔点分析 (方法B)
 # ============================================================================
 
@@ -381,8 +462,11 @@ def analyze_all_melting_points():
         # 分类
         type_key, type_label = classify_structure(structure)
         
-        # 方法A: 林德曼指数
+        # 方法A1: 林德曼指数阈值法 (δ = 0.1)
         result_lindemann = calculate_melting_point_lindemann(df_struct)
+        
+        # 方法A2: 林德曼指数跃变点法 (dδ/dT 最大值)
+        result_transition = calculate_melting_point_transition(df_struct)
         
         # 方法B: 聚类分区
         result_clustering = calculate_melting_point_clustering(structure)
@@ -411,6 +495,20 @@ def analyze_all_melting_points():
             row['Tm_lindemann_err'] = np.nan
             row['lindemann_note'] = 'No transition found'
         
+        # 跃变点法结果 (dδ/dT 最大值)
+        if result_transition:
+            row['Tm_transition'] = result_transition.get('Tm_transition', np.nan)
+            row['Tm_transition_err'] = result_transition.get('Tm_transition_err', np.nan)
+            row['dDelta_dT_max'] = result_transition.get('dDelta_dT_max', np.nan)
+            row['delta_at_transition'] = result_transition.get('delta_at_transition', np.nan)
+            row['transition_note'] = result_transition.get('note', '')
+        else:
+            row['Tm_transition'] = np.nan
+            row['Tm_transition_err'] = np.nan
+            row['dDelta_dT_max'] = np.nan
+            row['delta_at_transition'] = np.nan
+            row['transition_note'] = 'No transition found'
+        
         # 聚类法结果
         if result_clustering:
             row['Tm_clustering'] = result_clustering.get('Tm_clustering', np.nan)
@@ -423,11 +521,18 @@ def analyze_all_melting_points():
             row['delta_partition1'] = np.nan
             row['delta_partition2'] = np.nan
         
-        # 两种方法的差异
+        # 方法间差异计算
+        # Tm_lindemann vs Tm_clustering
         if not np.isnan(row['Tm_lindemann']) and not np.isnan(row['Tm_clustering']):
-            row['Tm_diff'] = row['Tm_lindemann'] - row['Tm_clustering']
+            row['Tm_diff_lind_clust'] = row['Tm_lindemann'] - row['Tm_clustering']
         else:
-            row['Tm_diff'] = np.nan
+            row['Tm_diff_lind_clust'] = np.nan
+        
+        # Tm_lindemann vs Tm_transition (阈值法 vs 跃变点法)
+        if not np.isnan(row['Tm_lindemann']) and not np.isnan(row['Tm_transition']):
+            row['Tm_diff_lind_trans'] = row['Tm_lindemann'] - row['Tm_transition']
+        else:
+            row['Tm_diff_lind_trans'] = np.nan
         
         results.append(row)
     
@@ -437,6 +542,8 @@ def analyze_all_melting_points():
     output_csv = OUTPUT_DIR / 'melting_point_summary.csv'
     df_results.to_csv(output_csv, index=False)
     print(f"\n  [OK] Saved: {output_csv}")
+    
+    return df_results
     
     return df_results
 
@@ -571,19 +678,19 @@ def plot_melting_point_analysis(df_results):
     
     # --- (d) Tm difference histogram ---
     ax = axes[1, 1]
-    df_diff = df_both[~df_both['Tm_diff'].isna()]
+    df_diff = df_both[~df_both['Tm_diff_lind_clust'].isna()]
     
     if not df_diff.empty:
         for type_key in ['supported', 'oxide']:
             df_type = df_diff[df_diff['type'] == type_key]
             if not df_type.empty:
-                ax.hist(df_type['Tm_diff'], bins=15, alpha=0.6,
+                ax.hist(df_type['Tm_diff_lind_clust'], bins=15, alpha=0.6,
                        color=colors[type_key], label=labels[type_key],
                        edgecolor='black')
         
         # 统计信息
-        mean_diff = df_diff['Tm_diff'].mean()
-        std_diff = df_diff['Tm_diff'].std()
+        mean_diff = df_diff['Tm_diff_lind_clust'].mean()
+        std_diff = df_diff['Tm_diff_lind_clust'].std()
         ax.axvline(mean_diff, color='red', linestyle='--', linewidth=2,
                    label=f'Mean = {mean_diff:.1f} K')
         ax.axvline(0, color='black', linestyle='-', linewidth=1, alpha=0.5)
@@ -835,8 +942,8 @@ def generate_report(df_results):
     
     # 两种方法对比
     if len(df_both) > 0:
-        mean_diff = df_both['Tm_diff'].mean()
-        std_diff = df_both['Tm_diff'].std()
+        mean_diff = df_both['Tm_diff_lind_clust'].mean()
+        std_diff = df_both['Tm_diff_lind_clust'].std()
         corr = df_both['Tm_lindemann'].corr(df_both['Tm_clustering'])
     else:
         mean_diff = std_diff = corr = np.nan
@@ -943,15 +1050,16 @@ def generate_report(df_results):
 
 ## 6. Full Results Table
 
-| Structure | Type | Pt | Sn | O | Tm (Lindemann) | Tm (Clustering) | Δ |
-|-----------|------|----|----|---|----------------|-----------------|---|
+| Structure | Type | Pt | Sn | O | Tm (Lindemann) | Tm (Transition) | Tm (Clustering) | Δ(L-T) |
+|-----------|------|----|----|---|----------------|-----------------|-----------------|--------|
 """
     
     for _, row in df_results.iterrows():
         Tm_L = f"{row['Tm_lindemann']:.0f}" if not np.isnan(row['Tm_lindemann']) else "N/A"
+        Tm_T = f"{row['Tm_transition']:.0f}" if not np.isnan(row.get('Tm_transition', np.nan)) else "N/A"
         Tm_C = f"{row['Tm_clustering']:.0f}" if not np.isnan(row['Tm_clustering']) else "N/A"
-        diff = f"{row['Tm_diff']:.0f}" if not np.isnan(row.get('Tm_diff', np.nan)) else "N/A"
-        report += f"| {row['structure']} | {row['type']} | {row['Pt']} | {row['Sn']} | {row['O']} | {Tm_L} | {Tm_C} | {diff} |\n"
+        diff = f"{row['Tm_diff_lind_trans']:.0f}" if not np.isnan(row.get('Tm_diff_lind_trans', np.nan)) else "N/A"
+        report += f"| {row['structure']} | {row['type']} | {row['Pt']} | {row['Sn']} | {row['O']} | {Tm_L} | {Tm_T} | {Tm_C} | {diff} |\n"
     
     report += """
 ---

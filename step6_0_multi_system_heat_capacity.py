@@ -376,6 +376,8 @@ BASE_DIR = Path(__file__).parent
 # 主数据集 (负载型纳米团簇)
 CLUSTER_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'energy_master_20251016_121110.csv'
 LINDEMANN_FILE = BASE_DIR / 'data' / 'lindemann' / 'lin-for-all-but-every-ele' / 'lindemann_master_run_20251113_195434.csv'
+# ★ 新增: 使用comparison文件支持PtSnO列（含氧体系的林德曼指数包含O原子）
+LINDEMANN_COMPARISON_FILE = BASE_DIR / 'data' / 'lindemann' / 'lin-for-all-but-every-ele' / 'lindemann_comparison_run_20251113_195434.csv'
 
 # Air数据集 (气相纳米团簇: 68, 86)
 AIR_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'lammps_energy_analysis-air' / 'energy_master_20251124_152416.csv'
@@ -824,30 +826,67 @@ def load_lindemann_individual_runs(system_filter=None):
     
     Args:
         system_filter: list of system types to filter
+        
+    Note:
+        ★ 含氧体系使用PtSnO列（林德曼指数包含O原子）
+        ★ 无氧体系使用PtSn列
     """
     print(f"\n>>> Loading Lindemann individual run data")
     
-    # 使用配置的林德曼数据文件 (v3: 2025-11-13)
-    if LINDEMANN_FILE.exists():
-        lindemann_files = [LINDEMANN_FILE]
-        print(f"    [✓] Using Lindemann data: {LINDEMANN_FILE.name}")
+    # ★ 优先使用comparison文件（包含PtSn和PtSnO列）
+    if LINDEMANN_COMPARISON_FILE.exists():
+        print(f"    [OK] Using Lindemann comparison data: {LINDEMANN_COMPARISON_FILE.name}")
+        print(f"        * 含氧体系: 使用PtSnO列（包含O原子）")
+        print(f"        * 无氧体系: 使用PtSn列")
+        
+        df = pd.read_csv(LINDEMANN_COMPARISON_FILE, encoding='utf-8')
+        print(f"    Loaded: {len(df)} records")
+        
+        # 判断是否为含氧体系，选择合适的林德曼指数列
+        def is_oxide_structure(struct_name):
+            """判断是否为含氧体系"""
+            struct = str(struct_name).lower()
+            return bool(re.search(r'o\d', struct))
+        
+        df['is_oxide'] = df['结构'].apply(is_oxide_structure)
+        # 含氧体系用PtSnO，无氧体系用PtSn
+        df['delta'] = df.apply(
+            lambda row: row['PtSnO'] if row['is_oxide'] else row['PtSn'], 
+            axis=1
+        )
+        
+        # 统计
+        n_oxide = df['is_oxide'].sum()
+        n_non_oxide = len(df) - n_oxide
+        print(f"    含氧体系: {n_oxide} records (使用PtSnO)")
+        print(f"    无氧体系: {n_non_oxide} records (使用PtSn)")
+        
+        # 重命名列以保持兼容性
+        df.rename(columns={'温度(K)': 'temp', '结构': 'structure', '目录': 'directory'}, inplace=True)
+        
+    elif LINDEMANN_FILE.exists():
+        # 回退到master文件
+        print(f"    [OK] Using Lindemann master data: {LINDEMANN_FILE.name}")
+        print(f"    [WARNING] 含氧体系的林德曼指数不包含O原子")
+        
+        df = pd.read_csv(LINDEMANN_FILE, encoding='utf-8')
+        print(f"    Loaded: {len(df)} records")
+        
+        # Map Chinese column names
+        col_mapping = {
+            '目录': 'directory',
+            '结构': 'structure',
+            '温度(K)': 'temp',
+            'Lindemann指数': 'delta'
+        }
+        if '目录' in df.columns:
+            df.rename(columns=col_mapping, inplace=True)
     else:
-        print(f"    [ERROR] Lindemann file not found: {LINDEMANN_FILE}")
+        print(f"    [ERROR] Lindemann file not found")
         return None
     
-    # Read and merge
-    dfs = []
-    for f in lindemann_files:
-        df_temp = pd.read_csv(f, encoding='utf-8')
-        dfs.append(df_temp)
-        print(f"      - {f.name}: {len(df_temp)} records")
-    
-    df = pd.concat(dfs, ignore_index=True)
-    print(f"    Total concatenated: {len(df)} records")
-    
     # Remove duplicates (based on directory + structure + temperature)
-    # Keep the latest record (assuming later files have more recent data)
-    key_cols = ['目录', '结构', '温度(K)'] if '目录' in df.columns else ['directory', 'structure', 'temp']
+    key_cols = ['directory', 'structure', 'temp']
     df_before_dedup = len(df)
     df = df.drop_duplicates(subset=key_cols, keep='last')
     duplicates_removed = df_before_dedup - len(df)
@@ -855,18 +894,6 @@ def load_lindemann_individual_runs(system_filter=None):
     if duplicates_removed > 0:
         print(f"    [OK] Removed {duplicates_removed} duplicate records ({duplicates_removed/df_before_dedup*100:.1f}%)")
         print(f"    After deduplication: {len(df)} unique records")
-    
-    # Map Chinese column names
-    col_mapping = {
-        '目录': 'directory',
-        '结构': 'structure',
-        '温度(K)': 'temp',
-        'Lindemann指数': 'delta'
-    }
-    
-    # Handle both Chinese and English column names
-    if '目录' in df.columns:
-        df.rename(columns=col_mapping, inplace=True)
     
     # Detect system types
     df[['system_type', 'system_id']] = df['structure'].apply(
@@ -886,7 +913,7 @@ def load_lindemann_individual_runs(system_filter=None):
     
     # Print system distribution
     system_counts = df['system_type'].value_counts()
-    print(f"    Loaded: {len(df)} records")
+    print(f"    Final: {len(df)} records")
     print(f"    System distribution:")
     for sys_type, count in system_counts.items():
         print(f"      - {sys_type}: {count} records")
