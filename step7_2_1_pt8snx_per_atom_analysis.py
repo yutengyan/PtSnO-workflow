@@ -48,7 +48,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 阈值
 HIGH_LINDEMANN = 0.10  # 高振动阈值
-HIGH_D = 0.01  # 高扩散阈值 (10^-5 cm²/s)
+HIGH_D = 1e-7  # 高扩散阈值 (cm²/s)，原值 0.01 * 1e-5
 
 # 颜色
 ELEMENT_COLORS = {'Pt': '#1f77b4', 'Sn': '#ff7f0e', 'O': '#2ca02c'}
@@ -186,6 +186,9 @@ def load_msd_data():
         'D(1e-5 cm²/s)': 'D'
     })
     
+    # D 值换算：原单位是 10⁻⁵ cm²/s，转换为真实值 cm²/s
+    df['D'] = df['D'] * 1e-5
+    
     # 验证唯一性
     dup_check = df.groupby(['full_run_key', 'atom_id']).size()
     print(f"  [OK] Pt8SnX MSD 数据: {len(df)} records")
@@ -284,7 +287,7 @@ def plot_heatmaps(df_stats):
     
     # 准备数据
     elements = ['Pt', 'Sn']
-    metrics = [('delta_mean', 'Lindemann Index (δ)'), ('D_mean', 'D (10⁻⁵ cm²/s)')]
+    metrics = [('delta_mean', 'Lindemann Index (δ)'), ('D_mean', 'D (cm²/s)')]
     
     for row_idx, (metric, metric_label) in enumerate(metrics):
         for col_idx, element in enumerate(elements):
@@ -433,7 +436,7 @@ def plot_element_comparison(df_stats):
         
         ax.axhline(HIGH_D, color='blue', linestyle='--', alpha=0.5)
         ax.set_xlabel('Sn Count (x in Pt8SnX)', fontsize=12)
-        ax.set_ylabel('D (10⁻⁵ cm²/s)', fontsize=12)
+        ax.set_ylabel('D (cm²/s)', fontsize=12)
         ax.set_title(f'T = {int(temp)} K', fontsize=13, fontweight='bold')
         ax.legend()
         ax.set_yscale('log')
@@ -504,7 +507,7 @@ def plot_temperature_curves(df_stats):
                    linewidth=2, markersize=6, label=f'Pt8Sn{sn}')
     ax.axhline(HIGH_D, color='blue', linestyle='--', alpha=0.5)
     ax.set_xlabel('Temperature (K)', fontsize=12)
-    ax.set_ylabel('D (10⁻⁵ cm²/s)', fontsize=12)
+    ax.set_ylabel('D (cm²/s)', fontsize=12)
     ax.set_title('Pt atoms: D vs Temperature', fontsize=13, fontweight='bold')
     ax.legend(ncol=2, fontsize=9)
     ax.set_yscale('log')
@@ -522,7 +525,7 @@ def plot_temperature_curves(df_stats):
                    linewidth=2, markersize=6, label=f'Pt8Sn{sn}')
     ax.axhline(HIGH_D, color='blue', linestyle='--', alpha=0.5)
     ax.set_xlabel('Temperature (K)', fontsize=12)
-    ax.set_ylabel('D (10⁻⁵ cm²/s)', fontsize=12)
+    ax.set_ylabel('D (cm²/s)', fontsize=12)
     ax.set_title('Sn atoms: D vs Temperature', fontsize=13, fontweight='bold')
     ax.legend(ncol=2, fontsize=9)
     ax.set_yscale('log')
@@ -566,7 +569,7 @@ def plot_delta_vs_D_scatter(df):
     ax.axvline(HIGH_LINDEMANN, color='red', linestyle='--', alpha=0.5)
     ax.axhline(HIGH_D, color='blue', linestyle='--', alpha=0.5)
     ax.set_xlabel('Lindemann Index (δ)', fontsize=12)
-    ax.set_ylabel('D (10⁻⁵ cm²/s)', fontsize=12)
+    ax.set_ylabel('D (cm²/s)', fontsize=12)
     ax.set_title(f'Pt atoms at {int(temp)}K', fontsize=13, fontweight='bold')
     ax.set_yscale('log')
     ax.grid(True, alpha=0.3)
@@ -583,7 +586,7 @@ def plot_delta_vs_D_scatter(df):
     ax.axvline(HIGH_LINDEMANN, color='red', linestyle='--', alpha=0.5)
     ax.axhline(HIGH_D, color='blue', linestyle='--', alpha=0.5)
     ax.set_xlabel('Lindemann Index (δ)', fontsize=12)
-    ax.set_ylabel('D (10⁻⁵ cm²/s)', fontsize=12)
+    ax.set_ylabel('D (cm²/s)', fontsize=12)
     ax.set_title(f'Sn atoms at {int(temp)}K', fontsize=13, fontweight='bold')
     ax.set_yscale('log')
     ax.grid(True, alpha=0.3)
@@ -621,7 +624,7 @@ def plot_delta_D_correlation_analysis(df):
             ax.scatter(pt['delta'], pt['D'], c=ELEMENT_COLORS['Pt'], alpha=0.4, s=20)
             r, p = stats.pearsonr(pt['delta'], pt['D'])
             ax.set_xlabel('Lindemann Index (δ)', fontsize=11)
-            ax.set_ylabel('D (10⁻⁵ cm²/s)', fontsize=11)
+            ax.set_ylabel('D (cm²/s)', fontsize=11)
             ax.set_title(f'Pt @ {temp}K (r={r:.3f})', fontsize=12, fontweight='bold')
             ax.set_yscale('log')
             ax.axvline(HIGH_LINDEMANN, color='red', linestyle='--', alpha=0.5)
@@ -635,7 +638,7 @@ def plot_delta_D_correlation_analysis(df):
             ax.scatter(sn['delta'], sn['D'], c=ELEMENT_COLORS['Sn'], alpha=0.4, s=20)
             r, p = stats.pearsonr(sn['delta'], sn['D'])
             ax.set_xlabel('Lindemann Index (δ)', fontsize=11)
-            ax.set_ylabel('D (10⁻⁵ cm²/s)', fontsize=11)
+            ax.set_ylabel('D (cm²/s)', fontsize=11)
             ax.set_title(f'Sn @ {temp}K (r={r:.3f})', fontsize=12, fontweight='bold')
             ax.set_yscale('log')
             ax.axvline(HIGH_LINDEMANN, color='red', linestyle='--', alpha=0.5)
@@ -722,69 +725,247 @@ def plot_delta_D_correlation_analysis(df):
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"  [SAVED] {output_path}")
     
-    # ===== 图3: 四象限分类图 =====
-    fig3, axes3 = plt.subplots(1, 3, figsize=(15, 5))
+    # ===== 图3: 四象限分类图 (专业风格) =====
+    # 每个温度独立保存，每张图 20:15 (宽:高) 比例
+    # 分区命名: I=Stable, II=Vibrating, III=Diffusing, IV=Active
     
-    for col, temp in enumerate([300, 600, 900]):
-        ax = axes3[col]
+    # 简洁配色：黑白灰为主，但有区分度
+    colors_map = {
+        'I': '#808080',      # 灰色 (Stable: 低δ低D)
+        'II': '#404040',     # 深灰 (Vibrating: 高δ低D)
+        'III': '#A0A0A0',    # 浅灰 (Diffusing: 低δ高D)
+        'IV': '#000000'      # 黑色 (Active: 高δ高D)
+    }
+    
+    for temp in [300, 600, 900]:
+        # 每张图独立，20:15 比例
+        fig_single, ax = plt.subplots(figsize=(10, 7.5))  # 20:15 = 10:7.5 (缩放)
+        
         td = df[df['temp'] == temp]
         
-        # 分类
+        # 分类 (使用分区标记)
         td = td.copy()
-        td['category'] = 'Stable'
-        td.loc[(td['delta'] > HIGH_LINDEMANN) & (td['D'] <= HIGH_D), 'category'] = 'Vibrating'
-        td.loc[(td['delta'] <= HIGH_LINDEMANN) & (td['D'] > HIGH_D), 'category'] = 'Diffusing'
-        td.loc[(td['delta'] > HIGH_LINDEMANN) & (td['D'] > HIGH_D), 'category'] = 'Active'
+        td['category'] = 'I'  # Stable
+        td.loc[(td['delta'] > HIGH_LINDEMANN) & (td['D'] <= HIGH_D), 'category'] = 'II'  # Vibrating
+        td.loc[(td['delta'] <= HIGH_LINDEMANN) & (td['D'] > HIGH_D), 'category'] = 'III'  # Diffusing
+        td.loc[(td['delta'] > HIGH_LINDEMANN) & (td['D'] > HIGH_D), 'category'] = 'IV'  # Active
         
         # 统计
         cat_counts = td['category'].value_counts()
         cat_pct = cat_counts / len(td) * 100
         
-        colors_map = {'Stable': '#2ca02c', 'Vibrating': '#ff7f0e', 
-                     'Diffusing': '#1f77b4', 'Active': '#d62728'}
-        
-        # 绘制散点
-        for cat in ['Stable', 'Vibrating', 'Diffusing', 'Active']:
+        # 绘制散点 (使用分区标记 I, II, III, IV)
+        for cat in ['I', 'II', 'III', 'IV']:
             cat_data = td[td['category'] == cat]
             if len(cat_data) > 0:
                 pct = cat_pct.get(cat, 0)
                 ax.scatter(cat_data['delta'], cat_data['D'], 
-                          c=colors_map[cat], alpha=0.4, s=15,
+                          c=colors_map[cat], alpha=0.5, s=40,
                           label=f'{cat} ({pct:.1f}%)')
         
-        ax.axvline(HIGH_LINDEMANN, color='red', linestyle='--', alpha=0.7)
-        ax.axhline(HIGH_D, color='blue', linestyle='--', alpha=0.7)
-        ax.set_xlabel('Lindemann Index (δ)', fontsize=11)
-        ax.set_ylabel('D (10⁻⁵ cm²/s)', fontsize=11)
-        ax.set_title(f'{temp}K', fontsize=13, fontweight='bold')
-        ax.set_yscale('log')
-        ax.legend(loc='lower right', fontsize=9)
-        ax.grid(True, alpha=0.3)
+        # 阈值线
+        ax.axvline(HIGH_LINDEMANN, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
+        ax.axhline(HIGH_D, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
         
-        # 添加象限标签
-        ax.text(0.02, 0.98, 'Stable\n(Low δ, Low D)', transform=ax.transAxes, 
-               fontsize=9, va='top', ha='left', color='green')
-        ax.text(0.98, 0.98, 'Vibrating\n(High δ, Low D)', transform=ax.transAxes, 
-               fontsize=9, va='top', ha='right', color='orange')
-        ax.text(0.02, 0.02, 'Diffusing\n(Low δ, High D)', transform=ax.transAxes, 
-               fontsize=9, va='bottom', ha='left', color='blue')
-        ax.text(0.98, 0.02, 'Active\n(High δ, High D)', transform=ax.transAxes, 
-               fontsize=9, va='bottom', ha='right', color='red')
+        # 坐标轴标签 (34号字体)
+        ax.set_xlabel('Lindemann Index', fontsize=34)
+        ax.set_ylabel('D (cm²/s)', fontsize=34)
+        
+        # 坐标轴刻度数字 (28号字体)
+        ax.tick_params(axis='both', labelsize=28)
+        
+        # Y轴对数刻度
+        ax.set_yscale('log')
+        
+        # 设置X轴刻度 (5个刻度: 0, 0.1, 0.2, 0.3, 0.4)
+        ax.set_xlim(0, 0.45)
+        ax.set_xticks([0, 0.1, 0.2, 0.3, 0.4])
+        
+        # 设置Y轴刻度 (6个刻度)
+        ax.set_ylim(1e-9, 1e-4)
+        ax.set_yticks([1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4])
+        
+        # 图注 (22号字体, 无边框)
+        ax.legend(loc='lower right', fontsize=22, frameon=False)
+        
+        # 网格
+        ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+        
+        plt.tight_layout()
+        
+        # 每个温度单独保存
+        output_path = OUTPUT_DIR / f'delta_D_quadrant_{temp}K.png'
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close(fig_single)
+        print(f"  [SAVED] {output_path}")
     
-    plt.suptitle('Atom Mobility Classification: Four Quadrants\n'
-                 f'(Thresholds: δ={HIGH_LINDEMANN}, D={HIGH_D})', 
-                 fontsize=14, fontweight='bold', y=1.02)
+    # fig3 设为 None (已分开保存)
+    fig3 = None
+    
+    # ===== 图4: 全局 δ vs log(D) 散点图 =====
+    df_log = df[(df['delta'] > 0) & (df['D'] > 0)].copy()
+    df_log['log_D'] = np.log10(df_log['D'])
+    
+    fig4, axes4 = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # 全局相关性
+    r_lin_global, _ = stats.pearsonr(df_log['delta'], df_log['D'])
+    r_semilog_global, _ = stats.pearsonr(df_log['delta'], df_log['log_D'])
+    
+    # (1) 全局 δ vs D (对数Y轴)
+    ax = axes4[0]
+    scatter = ax.scatter(df_log['delta'], df_log['D'], 
+                        c=df_log['temp'], cmap='coolwarm', 
+                        s=15, alpha=0.4)
+    plt.colorbar(scatter, ax=ax, label='Temperature (K)')
+    ax.set_xlabel('Lindemann Index (δ)', fontsize=12)
+    ax.set_ylabel('D (cm²/s)', fontsize=12)
+    ax.set_title(f'Global: δ vs D (r={r_lin_global:.3f})\n'
+                 '(Y-axis log scale for visualization)', 
+                fontsize=12, fontweight='bold')
+    ax.set_yscale('log')
+    ax.grid(True, alpha=0.3)
+    
+    # (2) 全局 δ vs log(D) (线性Y轴)
+    ax = axes4[1]
+    scatter = ax.scatter(df_log['delta'], df_log['log_D'], 
+                        c=df_log['temp'], cmap='coolwarm', 
+                        s=15, alpha=0.4)
+    plt.colorbar(scatter, ax=ax, label='Temperature (K)')
+    
+    # 线性拟合
+    z = np.polyfit(df_log['delta'], df_log['log_D'], 1)
+    p = np.poly1d(z)
+    x_line = np.linspace(df_log['delta'].min(), df_log['delta'].max(), 100)
+    ax.plot(x_line, p(x_line), 'r-', linewidth=2, alpha=0.8, 
+           label=f'Fit: log(D) = {z[0]:.2f}*delta + {z[1]:.2f}')
+    
+    ax.set_xlabel('Lindemann Index (δ)', fontsize=12)
+    ax.set_ylabel('log10(D)', fontsize=12)
+    ax.set_title(f'Global: delta vs log(D) (r={r_semilog_global:.3f})\n'
+                 '[Note: High r includes temperature effect!]', 
+                fontsize=12, fontweight='bold')
+    ax.legend(loc='lower right', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    plt.suptitle('Global δ-D Correlation (All Temperatures Mixed)\n'
+                 'Color = Temperature: Blue(200K) → Red(1100K)', 
+                 fontsize=13, fontweight='bold', y=1.02)
     plt.tight_layout()
     
-    output_path = OUTPUT_DIR / 'delta_D_quadrant_analysis.png'
+    output_path = OUTPUT_DIR / 'delta_D_global_correlation.png'
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"  [SAVED] {output_path}")
     
-    # 保存相关性统计
+    # ===== 图5: 分温度 δ vs log(D) 相关性对比 =====
+    fig5, axes5 = plt.subplots(2, 3, figsize=(15, 10))
+    
+    # 对比: 原始相关 (δ vs D) vs 半对数相关 (δ vs log D)
+    temps_compare = sorted(df_log['temp'].unique())
+    
+    linear_r = []
+    log_r = []
+    
+    for temp in temps_compare:
+        td = df_log[df_log['temp'] == temp]
+        if len(td) > 10:
+            r_lin, _ = stats.pearsonr(td['delta'], td['D'])
+            r_log, _ = stats.pearsonr(td['delta'], td['log_D'])
+            linear_r.append(r_lin)
+            log_r.append(r_log)
+        else:
+            linear_r.append(np.nan)
+            log_r.append(np.nan)
+    
+    # 上排: 散点图比较 (选3个温度)
+    for col, temp in enumerate([300, 600, 900]):
+        td = df_log[df_log['temp'] == temp]
+        
+        # 原始相关 (δ vs D, D用对数坐标显示)
+        ax = axes5[0, col]
+        ax.scatter(td['delta'], td['D'], alpha=0.3, s=15, c='steelblue')
+        r_lin, _ = stats.pearsonr(td['delta'], td['D'])
+        ax.set_xlabel('δ', fontsize=11)
+        ax.set_ylabel('D (cm²/s)', fontsize=11)
+        ax.set_title(f'{temp}K: δ vs D (r={r_lin:.3f})', fontsize=12, fontweight='bold')
+        ax.set_yscale('log')
+        ax.grid(True, alpha=0.3)
+        
+        # 半对数相关 (δ vs log D)
+        ax = axes5[1, col]
+        ax.scatter(td['delta'], td['log_D'], alpha=0.3, s=15, c='darkorange')
+        r_log, _ = stats.pearsonr(td['delta'], td['log_D'])
+        ax.set_xlabel('δ', fontsize=11)
+        ax.set_ylabel('log₁₀(D)', fontsize=11)
+        ax.set_title(f'{temp}K: δ vs log(D) (r={r_log:.3f})', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        
+        # 添加线性拟合
+        z = np.polyfit(td['delta'], td['log_D'], 1)
+        p = np.poly1d(z)
+        x_line = np.linspace(td['delta'].min(), td['delta'].max(), 100)
+        ax.plot(x_line, p(x_line), 'r-', linewidth=2, alpha=0.7, 
+               label=f'slope={z[0]:.2f}')
+        ax.legend(loc='lower right', fontsize=10)
+    
+    plt.suptitle('Linear vs Semi-Log Correlation Comparison\n'
+                 'δ vs D (linear) vs δ vs log(D)', 
+                 fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    
+    output_path = OUTPUT_DIR / 'delta_D_log_correlation_compare.png'
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"  [SAVED] {output_path}")
+    
+    # ===== 图6: r值对比汇总 =====
+    fig6, ax6 = plt.subplots(1, 1, figsize=(10, 6))
+    
+    ax6.plot(temps_compare, linear_r, 'o-', color='steelblue', linewidth=2, 
+            markersize=8, label='Linear (δ vs D)')
+    ax6.plot(temps_compare, log_r, 's-', color='darkorange', linewidth=2, 
+            markersize=8, label='Semi-Log (δ vs log D)')
+    
+    # 添加全局相关性的水平线
+    ax6.axhline(r_semilog_global, color='darkorange', linestyle=':', alpha=0.7,
+               label=f'Global Semi-Log r={r_semilog_global:.2f} (all temps)')
+    
+    ax6.axhline(0, color='black', linestyle='-', alpha=0.3)
+    ax6.axhline(0.3, color='gray', linestyle='--', alpha=0.5)
+    ax6.set_xlabel('Temperature (K)', fontsize=12)
+    ax6.set_ylabel('Pearson Correlation (r)', fontsize=12)
+    ax6.set_title('Linear vs Semi-Log Correlation: r vs Temperature\n'
+                  '(Comparing δ vs D with δ vs log(D))', 
+                  fontsize=13, fontweight='bold')
+    ax6.legend(fontsize=11)
+    ax6.grid(True, alpha=0.3)
+    ax6.set_ylim(-0.1, 0.8)
+    
+    # 添加文字说明
+    avg_lin = np.nanmean(linear_r)
+    avg_log = np.nanmean(log_r)
+    ax6.text(0.98, 0.02, f'Avg Linear r = {avg_lin:.3f}\nAvg Semi-Log r = {avg_log:.3f}\n'
+             f'Global Semi-Log r = {r_semilog_global:.3f}', 
+            transform=ax6.transAxes, fontsize=11, va='bottom', ha='right',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    
+    output_path = OUTPUT_DIR / 'delta_D_linear_vs_log_r.png'
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"  [SAVED] {output_path}")
+    
+    # 保存相关性统计 (添加 semi-log: δ vs log D)
+    df_corr['r_semilog'] = np.nan
+    for i, row in df_corr.iterrows():
+        td = df_log[(df_log['temp'] == row['temp']) & (df_log['element'] == row['element'])]
+        if len(td) > 10:
+            r_log, _ = stats.pearsonr(td['delta'], td['log_D'])
+            df_corr.loc[i, 'r_semilog'] = r_log
+    
     df_corr.to_csv(OUTPUT_DIR / 'delta_D_correlation_stats.csv', index=False, encoding='utf-8-sig')
     print(f"  [SAVED] {OUTPUT_DIR / 'delta_D_correlation_stats.csv'}")
     
-    return fig1, fig2, fig3
+    return fig1, fig2, fig3, fig4, fig5, fig6
 
 
 # ============================================================================
@@ -817,9 +998,9 @@ def generate_report(df, df_stats):
             report.append(f"   {element}:")
             report.append(f"      原子数: {len(elem_data)}")
             report.append(f"      δ = {elem_data['delta'].mean():.4f} ± {elem_data['delta'].std():.4f}")
-            report.append(f"      D = {elem_data['D'].mean():.4f} ± {elem_data['D'].std():.4f}")
+            report.append(f"      D = {elem_data['D'].mean():.2e} ± {elem_data['D'].std():.2e} cm²/s")
             report.append(f"      高振动比例 (δ>{HIGH_LINDEMANN}): {(elem_data['delta'] > HIGH_LINDEMANN).mean()*100:.1f}%")
-            report.append(f"      高扩散比例 (D>{HIGH_D}): {(elem_data['D'] > HIGH_D).mean()*100:.1f}%")
+            report.append(f"      高扩散比例 (D>{HIGH_D:.0e}): {(elem_data['D'] > HIGH_D).mean()*100:.1f}%")
     report.append("")
     
     report.append("3. Sn含量影响 (高温 ~900K)")
@@ -833,7 +1014,7 @@ def generate_report(df, df_stats):
         if len(elem_data) > 0:
             report.append(f"   {element} @ {int(high_temp)}K:")
             for _, row in elem_data.iterrows():
-                report.append(f"      Pt8Sn{int(row['sn_count'])}: δ={row['delta_mean']:.4f}, D={row['D_mean']:.4f}")
+                report.append(f"      Pt8Sn{int(row['sn_count'])}: δ={row['delta_mean']:.4f}, D={row['D_mean']:.2e}")
     report.append("")
     
     report.append("4. 林德曼指数-扩散系数相关性分析")
@@ -917,6 +1098,38 @@ def generate_report(df, df_stats):
                 report.append(f"   高温相关性较强 (r≈{avg_high:.2f}), 低温相关性较弱 (r≈{avg_low:.2f})")
             else:
                 report.append(f"   相关性随温度变化不大 (低温r≈{avg_low:.2f}, 高温r≈{avg_high:.2f})")
+    
+    # Semi-log 相关性 (δ vs log D)
+    report.append("")
+    report.append("6. Semi-Log 相关性对比 (δ vs log D)")
+    report.append("-" * 40)
+    
+    log_valid = valid_df[(valid_df['delta'] > 0) & (valid_df['D'] > 0)].copy()
+    log_valid['log_D'] = np.log10(log_valid['D'])
+    
+    if len(log_valid) > 10:
+        r_linear, _ = stats.pearsonr(log_valid['delta'], log_valid['D'])
+        r_semilog, _ = stats.pearsonr(log_valid['delta'], log_valid['log_D'])
+        report.append(f"   Linear (δ vs D): r = {r_linear:.4f}")
+        report.append(f"   Semi-Log (δ vs log D): r = {r_semilog:.4f}")
+        
+        if r_semilog > r_linear + 0.05:
+            report.append(f"   → 对 D 取 log 提升相关性 (+{r_semilog - r_linear:.3f})")
+        elif r_linear > r_semilog + 0.05:
+            report.append(f"   → 原始线性相关更好 (+{r_linear - r_semilog:.3f})")
+        else:
+            report.append(f"   → 两种方法相关性相近")
+        
+        # 分温度对比
+        report.append("   分温度 Semi-Log 相关性:")
+        for temp in temps:
+            td = log_valid[log_valid['temp'] == temp]
+            if len(td) > 10:
+                r_lin, _ = stats.pearsonr(td['delta'], td['D'])
+                r_slog, _ = stats.pearsonr(td['delta'], td['log_D'])
+                diff = r_slog - r_lin
+                sign = '+' if diff > 0 else ''
+                report.append(f"      {int(temp)}K: Linear r={r_lin:.3f}, Semi-Log r={r_slog:.3f} ({sign}{diff:.3f})")
     
     report.append("")
     report.append("=" * 80)
