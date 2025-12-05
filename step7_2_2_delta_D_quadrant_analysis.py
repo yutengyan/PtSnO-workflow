@@ -399,10 +399,26 @@ def classify_atoms(df):
     return df
 
 
-def plot_single_quadrant(ax, df, temp, show_ylabel=True):
+def plot_single_quadrant(ax, df, temp, show_ylabel=True, style_args=None):
     """
     在指定axes上绘制单个温度的四象限图
+    
+    Args:
+        ax: matplotlib axes
+        df: 数据
+        temp: 温度
+        show_ylabel: 是否显示Y轴标签
+        style_args: 样式参数字典 {tick_fontsize, label_fontsize, legend_fontsize, marker_size, line_width}
     """
+    # 默认样式参数（与原始代码一致）
+    if style_args is None:
+        style_args = {}
+    tick_fs = style_args.get('tick_fontsize', 28)
+    label_fs = style_args.get('label_fontsize', 34)
+    legend_fs = style_args.get('legend_fontsize', 22)
+    marker_s = style_args.get('marker_size', 40)
+    line_w = style_args.get('line_width', 1.5)
+    
     td = df[df['temp'] == temp].copy()
     td = classify_atoms(td)
     
@@ -416,20 +432,20 @@ def plot_single_quadrant(ax, df, temp, show_ylabel=True):
         if len(cat_data) > 0:
             pct = cat_pct.get(cat, 0)
             ax.scatter(cat_data['delta'], cat_data['D'], 
-                      c=COLORS_MAP[cat], alpha=0.5, s=40,
+                      c=COLORS_MAP[cat], alpha=0.5, s=marker_s,
                       label=f'{cat} ({pct:.1f}%)')
     
     # 阈值线
-    ax.axvline(HIGH_LINDEMANN, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
-    ax.axhline(HIGH_D, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
+    ax.axvline(HIGH_LINDEMANN, color='black', linestyle='--', linewidth=line_w, alpha=0.8)
+    ax.axhline(HIGH_D, color='black', linestyle='--', linewidth=line_w, alpha=0.8)
     
-    # 坐标轴标签 (34号字体)
-    ax.set_xlabel('Lindemann Index', fontsize=34)
+    # 坐标轴标签
+    ax.set_xlabel('Lindemann Index', fontsize=label_fs)
     if show_ylabel:
-        ax.set_ylabel('D (Å²/fs)', fontsize=34)
+        ax.set_ylabel('D (Å²/fs)', fontsize=label_fs)
     
-    # 坐标轴刻度数字 (28号字体)
-    ax.tick_params(axis='both', labelsize=28)
+    # 坐标轴刻度数字
+    ax.tick_params(axis='both', labelsize=tick_fs)
     
     # Y轴对数刻度
     ax.set_yscale('log')
@@ -442,13 +458,16 @@ def plot_single_quadrant(ax, df, temp, show_ylabel=True):
     ax.set_ylim(1e-8, 1e-3)
     ax.set_yticks([1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3])
     
-    # 图注 (22号字体, 无边框)
-    ax.legend(loc='lower right', fontsize=22, frameon=False)
+    # 图注 (无边框, 紧凑布局)
+    ax.legend(loc='lower right', fontsize=legend_fs, frameon=False,
+              handletextpad=0.05,  # 点与文字间距 (默认0.8)
+              labelspacing=0.3,   # 行间距 (默认0.5)
+              borderpad=0.2)      # 边框内边距
     
     return cat_pct
 
 
-def generate_individual_plots(df, temperatures):
+def generate_individual_plots(df, temperatures, style_args=None):
     """生成独立的四象限图 (每个20:15比例)"""
     print("\n生成独立四象限图...")
     
@@ -460,7 +479,7 @@ def generate_individual_plots(df, temperatures):
         # 每张图独立，20:15 比例 (宽:高)
         fig, ax = plt.subplots(figsize=(10, 7.5))
         
-        cat_pct = plot_single_quadrant(ax, df, temp, show_ylabel=True)
+        cat_pct = plot_single_quadrant(ax, df, temp, show_ylabel=True, style_args=style_args)
         
         plt.tight_layout()
         
@@ -478,7 +497,7 @@ def generate_individual_plots(df, temperatures):
         print()
 
 
-def generate_combined_plot(df, temperatures):
+def generate_combined_plot(df, temperatures, style_args=None):
     """生成合并图 (子图共享坐标轴)"""
     print("\n生成合并四象限图...")
     
@@ -499,11 +518,7 @@ def generate_combined_plot(df, temperatures):
         ax = axes[idx]
         show_ylabel = (idx == 0)
         
-        cat_pct = plot_single_quadrant(ax, df, temp, show_ylabel=show_ylabel)
-        
-        # 添加温度标注在图上方
-        ax.text(0.5, 1.02, f'{temp} K', transform=ax.transAxes, 
-               fontsize=34, fontweight='bold', ha='center', va='bottom')
+        cat_pct = plot_single_quadrant(ax, df, temp, show_ylabel=show_ylabel, style_args=style_args)
         
         # 非第一个子图隐藏Y轴刻度标签
         if idx > 0:
@@ -518,13 +533,28 @@ def generate_combined_plot(df, temperatures):
     print(f"  [SAVED] {output_path}")
 
 
-def generate_comparison_plot(df, temp_low=300, temp_high=900):
+def generate_comparison_plot(df, temp_low=300, temp_high=900, style_args=None):
     """
     生成两个温度的对比图 (默认 300K vs 900K)
     
-    两个子图并排，共享坐标轴，20:15 比例
+    两个子图并排，共享坐标轴
+    
+    Args:
+        df: 数据
+        temp_low: 低温
+        temp_high: 高温
+        style_args: 样式参数字典
     """
     print(f"\n生成 {temp_low}K vs {temp_high}K 对比图...")
+    
+    # 默认样式参数
+    if style_args is None:
+        style_args = {}
+    figsize_str = style_args.get('figsize', '16x7.5')
+    try:
+        fig_w, fig_h = map(float, figsize_str.lower().split('x'))
+    except ValueError:
+        fig_w, fig_h = 16, 7.5
     
     # 检查数据
     temps_available = df['temp'].unique()
@@ -532,18 +562,14 @@ def generate_comparison_plot(df, temp_low=300, temp_high=900):
         print(f"  [SKIP] 需要 {temp_low}K 和 {temp_high}K 数据")
         return
     
-    # 创建 2 个子图，共享Y轴，每个子图接近 20:15 比例
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7.5), sharey=True)
+    # 创建 2 个子图，共享Y轴
+    fig, axes = plt.subplots(1, 2, figsize=(fig_w, fig_h), sharey=True)
     
     for idx, temp in enumerate([temp_low, temp_high]):
         ax = axes[idx]
         show_ylabel = (idx == 0)
         
-        cat_pct = plot_single_quadrant(ax, df, temp, show_ylabel=show_ylabel)
-        
-        # 添加温度标注在图上方
-        ax.text(0.5, 1.02, f'{temp} K', transform=ax.transAxes, 
-               fontsize=34, fontweight='bold', ha='center', va='bottom')
+        cat_pct = plot_single_quadrant(ax, df, temp, show_ylabel=show_ylabel, style_args=style_args)
         
         # 非第一个子图隐藏Y轴刻度标签
         if idx > 0:
@@ -627,6 +653,20 @@ def parse_args():
     parser.add_argument('--compare', '-c', type=str, default='',
                         help='生成两温度对比图，格式 "低温,高温"，如 "300,900"')
     
+    # 图片尺寸和样式参数（默认值与原始代码一致）
+    parser.add_argument('--figsize', type=str, default='16x7.5',
+                        help='对比图尺寸，格式 WxH（默认 16x7.5）')
+    parser.add_argument('--tick-fontsize', type=int, default=28,
+                        help='刻度字体大小（默认 28）')
+    parser.add_argument('--label-fontsize', type=int, default=34,
+                        help='轴标签字体大小（默认 34）')
+    parser.add_argument('--legend-fontsize', type=int, default=22,
+                        help='图例字体大小（默认 22）')
+    parser.add_argument('--marker-size', type=int, default=40,
+                        help='数据点大小（默认 40）')
+    parser.add_argument('--line-width', type=float, default=1.5,
+                        help='阈值线粗细（默认 1.5）')
+    
     return parser.parse_args()
 
 
@@ -685,12 +725,24 @@ def main():
         except:
             print(f"  [WARNING] 无法解析 --compare 参数: {args.compare}")
     
+    # 样式参数字典
+    style_args = {
+        'figsize': args.figsize,
+        'tick_fontsize': args.tick_fontsize,
+        'label_fontsize': args.label_fontsize,
+        'legend_fontsize': args.legend_fontsize,
+        'marker_size': args.marker_size,
+        'line_width': args.line_width,
+    }
+    
     print(f"\n参数:")
     print(f"  --only-series: {only_series}")
     print(f"  --exclude: {exclude_compositions}")
     print(f"  --temps: {temperatures}")
     if compare_temps:
         print(f"  --compare: {compare_temps[0]}K vs {compare_temps[1]}K")
+    print(f"  样式: figsize={args.figsize}, marker={args.marker_size}, line={args.line_width}")
+    print(f"  字体: tick={args.tick_fontsize}, label={args.label_fontsize}, legend={args.legend_fontsize}")
     
     # 确保输出目录存在
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -706,14 +758,14 @@ def main():
         return
     
     # 生成独立图
-    generate_individual_plots(df, temperatures)
+    generate_individual_plots(df, temperatures, style_args=style_args)
     
     # 生成合并图
-    generate_combined_plot(df, temperatures)
+    generate_combined_plot(df, temperatures, style_args=style_args)
     
     # 生成300K vs 900K对比图
     if compare_temps:
-        generate_comparison_plot(df, temp_low=compare_temps[0], temp_high=compare_temps[1])
+        generate_comparison_plot(df, temp_low=compare_temps[0], temp_high=compare_temps[1], style_args=style_args)
     
     # 生成统计报告
     generate_statistics_report(df)
