@@ -33,14 +33,19 @@ from scipy.stats import linregress
 from pathlib import Path
 from datetime import datetime
 
-# 设置高质量论文图样式
-plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'SimHei']
+# 设置高质量论文图样式 - Arial (Nature/Science/ACS推荐)
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+plt.rcParams['mathtext.fontset'] = 'dejavusans'
 plt.rcParams['axes.unicode_minus'] = False
-plt.rcParams['font.size'] = 11
-plt.rcParams['axes.linewidth'] = 1.2
-plt.rcParams['xtick.major.width'] = 1.2
-plt.rcParams['ytick.major.width'] = 1.2
+plt.rcParams['font.size'] = 10
+plt.rcParams['axes.linewidth'] = 1.5
+plt.rcParams['xtick.major.width'] = 1.5
+plt.rcParams['ytick.major.width'] = 1.5
 
+# 字体大小常量
+FONT_TICK = 28
+FONT_LABEL = 34
 
 # 相态颜色配置
 PHASE_COLORS = {
@@ -101,7 +106,7 @@ def load_cluster_data(csv_path):
         return None
 
 
-def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300):
+def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None):
     """
     绘制分区热容拟合图（论文出图专用）
     
@@ -110,7 +115,23 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     2. 使用多数投票规则将每个温度分配给唯一的相态
     3. 对每个相态的专属温度点进行线性拟合
     4. 绘制整体拟合线 vs 分区拟合线对比
+    
+    tick_params: 刻度参数字典
+        - y_ticks_custom: 自定义Y轴刻度列表
+        - cv_ticks_custom: 自定义Cv轴刻度列表
+        - y_nticks: Y轴刻度数量
+        - cv_nticks: Cv轴刻度数量
+        - figsize: 图片尺寸 (宽, 高)
     """
+    
+    # 默认刻度参数
+    if tick_params is None:
+        tick_params = {}
+    y_ticks_custom = tick_params.get('y_ticks_custom', None)
+    cv_ticks_custom = tick_params.get('cv_ticks_custom', None)
+    y_nticks = tick_params.get('y_nticks', 5)
+    cv_nticks = tick_params.get('cv_nticks', 5)
+    figsize = tick_params.get('figsize', (10, 10))
     
     print(f"\n>>> 绘制 {structure_name} 分区热容图...")
     
@@ -225,13 +246,13 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
                   f"n={len(T_phase)}, T={T_phase.min():.0f}-{T_phase.max():.0f}K")
     
     # ========== 5. 绘制简洁的双Y轴图 ==========
-    fig, ax1 = plt.subplots(figsize=(8, 6))
+    fig, ax1 = plt.subplots(figsize=figsize)
     
     # ----- 左Y轴: 能量-温度数据点（带误差棒）和拟合线 -----
     # 绘制数据点（带误差棒）
     ax1.errorbar(temps_unique, E_cluster_mean_rel, yerr=E_cluster_std,
-                 fmt='o', markersize=7, color='black', 
-                 ecolor='gray', elinewidth=1.5, capsize=3, capthick=1.5,
+                 fmt='o', markersize=10, color='black', 
+                 ecolor='gray', elinewidth=2, capsize=4, capthick=2,
                  zorder=5, label='Data')
     
     # 绘制拟合线（黑色）
@@ -240,7 +261,7 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         fit = phase_fits[phase]
         T_phase_fit = np.linspace(fit['T_range'][0], fit['T_range'][1], 50)
         E_phase_fit = fit['slope'] * T_phase_fit + fit['intercept']
-        ax1.plot(T_phase_fit, E_phase_fit, '-', color='black', linewidth=2, zorder=4)
+        ax1.plot(T_phase_fit, E_phase_fit, '-', color='black', linewidth=2.5, zorder=4)
     
     # 连接两个分区之间的数据点（实线连接实际数据点，而非拟合线）
     if len(phases_sorted) >= 2:
@@ -261,11 +282,20 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         else:
             E2_start = fit2['slope'] * T2_start + fit2['intercept']
         # 用实线连接两个数据点
-        ax1.plot([T1_end, T2_start], [E1_end, E2_start], '-', color='black', linewidth=2, zorder=4)
+        ax1.plot([T1_end, T2_start], [E1_end, E2_start], '-', color='black', linewidth=2.5, zorder=4)
     
-    ax1.set_xlabel('Temperature (K)', fontsize=13, fontweight='bold')
-    ax1.set_ylabel('Total Energy (eV)', fontsize=13, fontweight='bold')
-    ax1.tick_params(axis='both', labelsize=11)
+    ax1.set_xlabel('Temperature (K)', fontsize=FONT_LABEL)
+    ax1.set_ylabel('Total Energy (eV)', fontsize=FONT_LABEL)
+    ax1.tick_params(axis='both', labelsize=FONT_TICK)
+    
+    # 设置Y轴刻度
+    E_ylim = ax1.get_ylim()
+    if y_ticks_custom is not None:
+        ax1.set_yticks(y_ticks_custom)
+    else:
+        y_ticks = np.linspace(E_ylim[0], E_ylim[1], y_nticks)
+        y_ticks = np.round(y_ticks)
+        ax1.set_yticks(y_ticks)
     
     # ----- 右Y轴: 热容曲线 -----
     ax2 = ax1.twinx()
@@ -324,7 +354,7 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
                     gaussian = (Cv_peak - baseline) * np.exp(-0.5 * ((T - T_boundary) / sigma)**2)
                     Cv_plot[i] = baseline + gaussian
                 
-                ax2.plot(T_plot, Cv_plot, 'r-', linewidth=2, zorder=3)
+                ax2.plot(T_plot, Cv_plot, 'r-', linewidth=2.5, zorder=3)
                 
                 # 构建导出数据（关键点）
                 T_cv = np.array([temps_unique.min(), T1_last, T_boundary, T2_first, temps_unique.max()])
@@ -333,9 +363,9 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
                 print(f"  热容: Cv1={Cv1:.2f} meV/K, Cv2={Cv2:.2f} meV/K (无峰)")
                 
                 # 绘制阶梯形热容曲线（无峰）
-                ax2.plot([temps_unique.min(), T_boundary], [Cv1, Cv1], 'r-', linewidth=2, zorder=3)
-                ax2.plot([T_boundary, T_boundary], [Cv1, Cv2], 'r--', linewidth=1.5, zorder=3)
-                ax2.plot([T_boundary, temps_unique.max()], [Cv2, Cv2], 'r-', linewidth=2, zorder=3)
+                ax2.plot([temps_unique.min(), T_boundary], [Cv1, Cv1], 'r-', linewidth=2.5, zorder=3)
+                ax2.plot([T_boundary, T_boundary], [Cv1, Cv2], 'r--', linewidth=2, zorder=3)
+                ax2.plot([T_boundary, temps_unique.max()], [Cv2, Cv2], 'r-', linewidth=2.5, zorder=3)
                 
                 T_cv = np.array([temps_unique.min(), T_boundary - 0.1, T_boundary, T_boundary + 0.1, temps_unique.max()])
                 Cv_curve = np.array([Cv1, Cv1, (Cv1 + Cv2) / 2, Cv2, Cv2])
@@ -343,12 +373,12 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         Cv_single = list(phase_fits.values())[0]['Cv']
         T_cv = np.array([temps_unique.min(), temps_unique.max()])
         Cv_curve = np.array([Cv_single, Cv_single])
-        ax2.plot(T_cv, Cv_curve, 'r-', linewidth=2, zorder=3)
+        ax2.plot(T_cv, Cv_curve, 'r-', linewidth=2.5, zorder=3)
         Cv1 = Cv_single
         Cv2 = Cv_single
     
-    ax2.set_ylabel('Cv (meV/K)', fontsize=13, fontweight='bold', color='red')
-    ax2.tick_params(axis='y', labelcolor='red', labelsize=11, color='red')
+    ax2.set_ylabel(r'$C_v$ (meV/K)', fontsize=FONT_LABEL, color='red')
+    ax2.tick_params(axis='y', labelcolor='red', labelsize=FONT_TICK, color='red')
     ax2.spines['right'].set_color('red')
     
     # 设置Y轴范围（考虑峰值）
@@ -359,7 +389,14 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     cv_max = max(cv_values) * 1.1
     ax2.set_ylim(cv_min, cv_max)
     
-    ax1.set_title(f'{structure_name}', fontsize=14, fontweight='bold', pad=10)
+    # 设置Cv轴刻度
+    Cv_ylim = ax2.get_ylim()
+    if cv_ticks_custom is not None:
+        ax2.set_yticks(cv_ticks_custom)
+    else:
+        cv_ticks = np.linspace(Cv_ylim[0], Cv_ylim[1], cv_nticks)
+        cv_ticks = np.round(cv_ticks)
+        ax2.set_yticks(cv_ticks)
     
     plt.tight_layout()
     
@@ -473,6 +510,7 @@ def parse_args():
   %(prog)s --structure Air86 --format pdf  # 输出PDF
   %(prog)s --structure all --dpi 600       # 所有结构，高分辨率
   %(prog)s --list                          # 列出可用结构
+  %(prog)s --structure Pt8sn6 --y-ticks 0,2,4 --cv-ticks 3,4,5,6,7  # 自定义刻度
         '''
     )
     
@@ -488,6 +526,16 @@ def parse_args():
     parser.add_argument('--output-dir', '-o', type=str, 
                         default='results/step6_1_1_partition_cv',
                         help='输出目录')
+    parser.add_argument('--figsize', type=str, default='10x10',
+                        help='图片尺寸，格式: 宽x高，例如 10x8 (默认: 10x10)')
+    parser.add_argument('--y-ticks', type=str, default=None,
+                        help='手动指定能量Y轴刻度，逗号分隔，例如: 0,2,4')
+    parser.add_argument('--cv-ticks', type=str, default=None,
+                        help='手动指定Cv轴刻度，逗号分隔，例如: 3,4,5,6,7')
+    parser.add_argument('--y-nticks', type=int, default=5,
+                        help='能量Y轴刻度数量 (默认: 5)，如果指定了 --y-ticks 则忽略')
+    parser.add_argument('--cv-nticks', type=int, default=5,
+                        help='Cv轴刻度数量 (默认: 5)，如果指定了 --cv-ticks 则忽略')
     
     return parser.parse_args()
 
@@ -499,6 +547,33 @@ def main():
     print("=" * 70)
     print("Step 6.1.1: 分区热容拟合图 - 论文出图专用")
     print("=" * 70)
+    
+    # 解析figsize
+    try:
+        fig_w, fig_h = map(float, args.figsize.lower().split('x'))
+        figsize = (fig_w, fig_h)
+        print(f"  图片尺寸: {figsize[0]}x{figsize[1]}")
+    except ValueError:
+        print(f"警告: 无效的figsize格式 '{args.figsize}'，使用默认 10x10")
+        figsize = (10, 10)
+    
+    # 解析自定义刻度
+    y_ticks_custom = None
+    cv_ticks_custom = None
+    
+    if args.y_ticks:
+        try:
+            y_ticks_custom = [float(x.strip()) for x in args.y_ticks.split(',')]
+            print(f"  能量Y轴刻度: {y_ticks_custom}")
+        except ValueError:
+            print(f"警告: 无效的 --y-ticks 格式 '{args.y_ticks}'，将自动计算")
+    
+    if args.cv_ticks:
+        try:
+            cv_ticks_custom = [float(x.strip()) for x in args.cv_ticks.split(',')]
+            print(f"  Cv轴刻度: {cv_ticks_custom}")
+        except ValueError:
+            print(f"警告: 无效的 --cv-ticks 格式 '{args.cv_ticks}'，将自动计算")
     
     # 列出可用结构
     if args.list:
@@ -547,8 +622,17 @@ def main():
             failed += 1
             continue
         
+        # 构建刻度参数
+        tick_params = {
+            'y_ticks_custom': y_ticks_custom,
+            'cv_ticks_custom': cv_ticks_custom,
+            'y_nticks': args.y_nticks,
+            'cv_nticks': args.cv_nticks,
+            'figsize': figsize,
+        }
+        
         result = plot_partition_cv(df, found_name, output_dir, 
-                                   args.format, args.dpi)
+                                   args.format, args.dpi, tick_params)
         
         if result:
             results.append(result)
