@@ -246,6 +246,7 @@ def parse_args():
     p.add_argument('--fontscale', '-f', type=float, default=1.0, help='字体缩放比例')
     p.add_argument('--no-title', action='store_true', help='不显示图片标题')
     p.add_argument('--no-show', action='store_true', help='只保存图片，不弹出交互式窗口')
+    p.add_argument('--no-legend', action='store_true', help='不显示图例')
     p.add_argument('--separator', default='white', choices=['white', 'black', 'none'],
                    help='氧系列分隔线颜色 (仅--sort oxygen时有效): white=白线, black=黑线, none=不绘制')
     return p.parse_args()
@@ -264,6 +265,43 @@ def expand_structure_name(name):
         return f"Pt{name[0]}Sn{name[1]}"
     # 否则返回原名（会做大小写不敏感匹配）
     return name
+
+
+def parse_structure_composition(name):
+    """
+    解析结构名中的 Pt、Sn、O 原子数
+    支持 Pt3Sn4O1, Sn3pt4o1, pt3sn4o1 等格式
+    返回 (pt, sn, o) 元组，解析失败返回 None
+    """
+    import re
+    name_lower = name.lower()
+    pt_match = re.search(r'pt(\d+)', name_lower)
+    sn_match = re.search(r'sn(\d+)', name_lower)
+    o_match = re.search(r'o(\d+)', name_lower)
+    
+    pt = int(pt_match.group(1)) if pt_match else 0
+    sn = int(sn_match.group(1)) if sn_match else 0
+    o = int(o_match.group(1)) if o_match else 0
+    
+    if pt > 0 or sn > 0:
+        return (pt, sn, o)
+    return None
+
+
+def should_exclude_structure(struct_name, exclude_list):
+    """
+    检查结构是否应该被排除
+    基于 Pt、Sn、O 原子数匹配，而不是字符串匹配
+    """
+    struct_comp = parse_structure_composition(struct_name)
+    if struct_comp is None:
+        return False
+    
+    for excl in exclude_list:
+        excl_comp = parse_structure_composition(excl)
+        if excl_comp and excl_comp == struct_comp:
+            return True
+    return False
 
 
 def load_data():
@@ -411,8 +449,8 @@ def plot_combined_heatmap(df_all, df_mp, args):
     fs = args.fontscale
     from scipy.interpolate import interp1d
     
-    # 处理排除列表：扩展简写并转为小写
-    exclude_list = [expand_structure_name(e).lower() for e in args.exclude]
+    # 处理排除列表：扩展简写
+    exclude_list = [expand_structure_name(e) for e in args.exclude]
     
     # 统一的温度网格 (100K 间隔)
     unified_temps = np.arange(200, 1150, 100)
@@ -422,8 +460,10 @@ def plot_combined_heatmap(df_all, df_mp, args):
     for series_name, config in OXIDE_SERIES.items():
         o_val = config['O']
         df_series = df_mp[(df_mp['O'] == o_val) & (df_mp['type'] == 'oxide')].copy()
-        # 排除指定结构（大小写不敏感）
-        df_series = df_series[~df_series['structure'].str.lower().isin(exclude_list)]
+        # 排除指定结构（基于 Pt、Sn、O 原子数匹配）
+        if exclude_list:
+            mask = df_series['structure'].apply(lambda s: should_exclude_structure(s, exclude_list))
+            df_series = df_series[~mask]
         if not df_series.empty:
             df_series['series'] = series_name
             df_series['color'] = config['color']
@@ -503,7 +543,7 @@ def plot_combined_heatmap(df_all, df_mp, args):
     ax.set_yticklabels([f'{int(t)}' for t in temps], fontsize=int(28*fs))
     
     ax.set_xlabel('Pt$_x$Sn$_y$O$_z$ (x,y,z)', fontsize=int(34*fs), fontweight='bold')
-    ax.set_ylabel('Temperature', fontsize=int(34*fs), fontweight='bold')
+    ax.set_ylabel('Temperature (K)', fontsize=int(34*fs), fontweight='bold')
     
     # 等值线 - 根据判据选择
     X, Y = np.meshgrid(np.arange(len(cols)), np.arange(len(temps)))
@@ -656,8 +696,8 @@ def plot_combined_heatmap(df_all, df_mp, args):
     if args.tm_method == 'cv-partition':
         legend_elements.append(Line2D([0], [0], color='magenta', linestyle='--', lw=2, 
                                       label='Cv Partition'))
-    # 只有当有图例元素时才显示
-    if legend_elements:
+    # 只有当有图例元素且没有 --no-legend 时才显示
+    if legend_elements and not args.no_legend:
         ax.legend(handles=legend_elements, loc='upper left', fontsize=int(26*fs), 
                  frameon=False)  # frameon=False 去掉框框
     

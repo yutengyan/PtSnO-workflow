@@ -112,12 +112,13 @@ def load_large_D_outliers():
     加载大D值异常run清单 (可选)
     
     返回:
-        set: 异常文件路径集合,如果文件不存在则返回空集
+        set: 异常文件路径集合(小写),如果文件不存在则返回空集
     """
     outlier_file = Path(OUTLIERS_FILE)
     try:
         df_outliers = pd.read_csv(outlier_file)
-        outlier_files = set(df_outliers['filepath'].values)
+        # 使用小写路径进行匹配 (Windows路径不区分大小写)
+        outlier_files = set(p.lower() for p in df_outliers['filepath'].values)
         print(f"   [OK] 加载异常run清单: {len(outlier_files)} 个")
         return outlier_files
     except FileNotFoundError:
@@ -398,8 +399,9 @@ def main():
         total_runs_before_filter += original_n_files
         
         # 使用step1筛选后的run (舍弃large_D_outliers中的run)
-        valid_files = [f for f in files if str(f) not in large_D_outliers]
-        filtered_files = [f for f in files if str(f) in large_D_outliers]  # 新增: 被筛选掉的runs
+        # 注意: 使用小写绝对路径进行匹配 (Windows路径不区分大小写)
+        valid_files = [f for f in files if str(f.resolve()).lower() not in large_D_outliers]
+        filtered_files = [f for f in files if str(f.resolve()).lower() in large_D_outliers]  # 被筛选掉的runs
         n_filtered = original_n_files - len(valid_files)
         step0_filtered += n_filtered
         
@@ -461,7 +463,7 @@ def main():
     # 步骤5: 保存结果
     print(f"\n[5/5] 保存结果...")
     
-    # 保存有效runs的集合平均
+    # 保存有效runs的集合平均 (筛选后)
     df_results = pd.DataFrame(results)
     output_file = Path(OUTPUT_DIR) / 'ensemble_analysis_results.csv'
     df_results.to_csv(output_file, index=False, encoding='utf-8-sig')
@@ -475,6 +477,14 @@ def main():
         print(f"   [OK] 被筛选runs结果: {output_file_filt}")
     else:
         print(f"   ⚠️ 无被筛选掉的runs可做集合平均")
+    
+    # 🆕 保存完整数据 (有效 + 被筛选) - 用于 --nofilter 模式
+    if len(results) > 0 or len(results_filtered) > 0:
+        all_results = results + results_filtered
+        df_all = pd.DataFrame(all_results)
+        output_file_all = Path(OUTPUT_DIR) / 'ensemble_analysis_all.csv'
+        df_all.to_csv(output_file_all, index=False, encoding='utf-8-sig')
+        print(f"   [OK] 完整数据 (含异常): {output_file_all} ({len(df_all)} 组)")
     
     # 统计报告
     print("\n" + "="*80)

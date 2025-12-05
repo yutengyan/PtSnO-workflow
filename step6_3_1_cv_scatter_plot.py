@@ -129,10 +129,10 @@ try:
 except ImportError:
     HAS_ADJUSTTEXT = False
 
-# Font settings for academic journals - Times New Roman
-plt.rcParams['font.family'] = 'serif'
-plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif', 'serif']
-plt.rcParams['mathtext.fontset'] = 'stix'  # STIX fonts similar to Times for math
+# Font settings for academic journals - Arial (Nature/Science/ACS推荐)
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'sans-serif']
+plt.rcParams['mathtext.fontset'] = 'dejavusans'  # 数学字体与 Arial 风格一致
 plt.rcParams['axes.unicode_minus'] = False
 plt.rcParams['font.size'] = 10
 
@@ -276,9 +276,10 @@ def classify_structure_detailed(name):
         result['sum8'] = True
     
     # 按Pt原子数分类 (pt8snx, pt6snx)
-    if pt == 8:
+    # 注意：如果已经归入 sum8，则不再归入 pt6snx/pt8snx，避免重复显示
+    if pt == 8 and total != 8:
         result['pt8snx'] = True
-    if pt == 6:
+    if pt == 6 and total != 8:
         result['pt6snx'] = True
     
     # 确定主分类（用于默认显示）
@@ -314,22 +315,22 @@ def match_series(classification, target_series):
 # 系列样式配置
 SERIES_STYLES = {
     # 气相: air-Pt_xSn_y
-    'air': {'color': '#1E90FF', 'marker': 'o', 'label': 'air-Pt$_x$Sn$_y$'},
+    'air': {'color': '#000000', 'marker': 'o', 'label': 'air-Pt$_x$Sn$_y$'},  # 黑色圆形
     
     # 按总原子数分类 (Pt+Sn=N)
-    'sum8': {'color': '#2E8B57', 'marker': 's', 'label': 'sup-Pt$_{8-x}$Sn$_x$'},
+    'sum8': {'color': '#000000', 'marker': 's', 'label': 'sup-Pt$_{8-x}$Sn$_x$'},  # 黑色方形
     
     # 按Pt原子数分类 (Pt=N)
-    'pt8snx': {'color': '#FF8C00', 'marker': '^', 'label': 'sup-Pt$_8$Sn$_x$'},
-    'pt6snx': {'color': '#DC143C', 'marker': 'v', 'label': 'sup-Pt$_6$Sn$_x$'},
+    'pt8snx': {'color': '#000000', 'marker': '^', 'label': 'sup-Pt$_8$Sn$_x$'},  # 黑色上三角
+    'pt6snx': {'color': '#000000', 'marker': 'v', 'label': 'sup-Pt$_6$Sn$_x$'},  # 黑色下三角
     
     'other_supported': {'color': '#808080', 'marker': 'p', 'label': 'sup-Pt$_x$Sn$_y$'},
     
-    # 负载含氧: sup-Pt_xSn_yO_z (x,y,z) - 分开，使用圆点和更好看的配色
-    'o1': {'color': '#E74C3C', 'marker': 'o', 'label': 'sup-Pt$_x$Sn$_y$O$_1$'},  # 红色
-    'o2': {'color': '#3498DB', 'marker': 'o', 'label': 'sup-Pt$_x$Sn$_y$O$_2$'},  # 蓝色
-    'o3': {'color': '#2ECC71', 'marker': 'o', 'label': 'sup-Pt$_x$Sn$_y$O$_3$'},  # 绿色
-    'o4': {'color': '#9B59B6', 'marker': 'o', 'label': 'sup-Pt$_x$Sn$_y$O$_4$'},  # 紫色
+    # 负载含氧: sup-Pt_xSn_yO_z (x,y,z) - 分开，使用不同标记和学术配色
+    'o1': {'color': '#000000', 'marker': 'o', 'label': 'sup-Pt$_x$Sn$_y$O$_1$'},  # 黑色圆形
+    'o2': {'color': '#000000', 'marker': 's', 'label': 'sup-Pt$_x$Sn$_y$O$_2$'},  # 黑色方形
+    'o3': {'color': '#000000', 'marker': '^', 'label': 'sup-Pt$_x$Sn$_y$O$_3$'},  # 黑色上三角
+    'o4': {'color': '#000000', 'marker': 'D', 'label': 'sup-Pt$_x$Sn$_y$O$_4$'},  # 黑色菱形
     
     # 负载含氧: sup-Pt_xSn_yO_z (x,y,z) - 合并为一个系列
     'oxide_all': {'color': '#E74C3C', 'marker': 'o', 'label': 'sup-Pt$_x$Sn$_y$O$_z$'},
@@ -415,7 +416,7 @@ def create_cv_scatter_plot(output_path='results/step6_1_clustering/cv1_vs_cv2_sc
                            exclude_list=None, show_errorbars=True, show_labels=True,
                            fontscale=1.0, markerscale=1.0,
                            classify_mode='simple', only_series=None, merge_oxide=False,
-                           interactive=False, no_stroke=False):
+                           interactive=False, no_stroke=False, figsize=(8, 8)):
     """
     Create Cv1 vs Cv2 scatter plot with non-overlapping labels
     
@@ -434,6 +435,7 @@ def create_cv_scatter_plot(output_path='results/step6_1_clustering/cv1_vs_cv2_sc
         merge_oxide: whether to merge O1-O4 into one series (default False)
         interactive: whether to enable interactive label dragging (default False)
         no_stroke: whether to disable white stroke around labels (default False)
+        figsize: figure size as tuple (width, height), default (8, 8)
     """
     
     # Base font sizes - 大字体配合大图片 (20:15 比例)
@@ -567,9 +569,9 @@ def create_cv_scatter_plot(output_path='results/step6_1_clustering/cv1_vs_cv2_sc
         print("No data to plot!")
         return None
     
-    # Create figure - 20:15 aspect ratio, 大尺寸配合大字体
-    # 16x12 英寸 = 20:15 比例，足够容纳 28-34pt 字体
-    fig, ax = plt.subplots(figsize=(16, 12))
+    # Create figure - 正方形数据配正方形图，减少空白
+    # 由于 Cv1 vs Cv2 是对角线对称图，使用接近正方形的尺寸
+    fig, ax = plt.subplots(figsize=figsize)
     
     # Increase tick label font size (scaled)
     ax.tick_params(axis='both', labelsize=FONT_TICK)
@@ -697,7 +699,8 @@ def create_cv_scatter_plot(output_path='results/step6_1_clustering/cv1_vs_cv2_sc
     
     ax.set_aspect('equal', adjustable='box')
     
-    plt.tight_layout()
+    # 减少边距
+    plt.tight_layout(pad=0.5)
     
     # 建立唯一ID到数据点坐标的映射
     uid_to_point = {unique_id: (x, y) for x, y, label, color, series_key, unique_id, name in all_points}
@@ -1009,6 +1012,8 @@ Examples:
                         help='Scale factor for all fonts (default 1.0, try 1.5 for larger)')
     parser.add_argument('--markerscale', '-m', type=float, default=1.0,
                         help='Scale factor for marker sizes (default 1.0, try 2 for larger)')
+    parser.add_argument('--figsize', type=str, default='8x8',
+                        help='Figure size in inches, format WxH (default 8x8)')
     parser.add_argument('-o', '--output', type=str, 
                         default='results/step6_1_clustering/cv1_vs_cv2_scatter.png',
                         help='Output file path')
@@ -1048,7 +1053,8 @@ Examples:
         only_series=only_series,
         merge_oxide=args.merge_oxide,
         interactive=args.interactive,
-        no_stroke=args.no_stroke
+        no_stroke=args.no_stroke,
+        figsize=tuple(map(float, args.figsize.lower().split('x')))
     )
     
     print("\n" + "=" * 60)

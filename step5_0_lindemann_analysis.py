@@ -297,6 +297,8 @@ BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / 'data' / 'lindemann' / 'lin-for-all-but-every-ele'
 # 最新的 lindemann_master 文件
 LINDEMANN_FILES = sorted(DATA_DIR.glob('lindemann_master_run_*.csv'))
+# lindemann_comparison 文件 (包含分元素数据: Pt, Sn, PtSn, PtSnO)
+COMPARISON_FILES = sorted(DATA_DIR.glob('lindemann_comparison_run_*.csv'))
 CONVERGENCE_FILE = DATA_DIR / 'convergence_master_run_20251113_195434.csv'
 COMPARISON_FILE = DATA_DIR / 'lindemann_comparison_run_20251113_195434.csv'
 
@@ -667,6 +669,7 @@ def load_and_filter_data(no_filter=False):
     改进:
     1. 筛选掉step1标记的异常run (可选)
     2. 对同一体系同一温度的多个run进行平均
+    3. 含氧体系使用PtSnO列（包含O原子），无氧体系使用PtSn列
     """
     print("=" * 80)
     print("Step7: 林德曼指数分析 (改进版)")
@@ -676,20 +679,54 @@ def load_and_filter_data(no_filter=False):
         print("[+] 模式: 使用MSD异常筛选 (默认)")
     print("=" * 80)
     
-    # 1. 加载林德曼数据 (合并所有文件以获得完整覆盖)
+    # 1. 加载林德曼数据 (优先使用comparison文件，包含分元素数据)
     print("\n[*] Loading lindemann data...")
-    print(f"  [INFO] Found {len(LINDEMANN_FILES)} lindemann files")
     
-    lindemann_dfs = []
-    for file in LINDEMANN_FILES:
-        df = pd.read_csv(file)
-        df.rename(columns={'温度(K)': '温度', 'Lindemann指数': '林德曼指数'}, inplace=True)
-        lindemann_dfs.append(df)
-        print(f"    - {file.name}: {len(df)} records")
-    
-    # 合并所有数据
-    df_lindemann = pd.concat(lindemann_dfs, ignore_index=True)
-    print(f"  [OK] Merged: {len(df_lindemann)} records")
+    # 优先使用comparison文件（包含PtSn和PtSnO列）
+    if COMPARISON_FILES:
+        print(f"  [INFO] Found {len(COMPARISON_FILES)} comparison files (with PtSn/PtSnO columns)")
+        lindemann_dfs = []
+        for file in COMPARISON_FILES:
+            df = pd.read_csv(file)
+            # 判断是否为含氧体系，选择合适的林德曼指数列
+            # 含氧体系用PtSnO（包含O原子），无氧体系用PtSn
+            def is_oxide_structure(struct_name):
+                """判断是否为含氧体系"""
+                struct = str(struct_name).lower()
+                import re as re_module
+                return bool(re_module.search(r'o\d', struct))
+            
+            # 根据体系类型选择林德曼指数
+            df['is_oxide'] = df['结构'].apply(is_oxide_structure)
+            df['林德曼指数'] = df.apply(
+                lambda row: row['PtSnO'] if row['is_oxide'] else row['PtSn'], 
+                axis=1
+            )
+            df['温度'] = df['温度(K)']
+            lindemann_dfs.append(df)
+            
+            # 统计含氧和无氧体系数量
+            n_oxide = df['is_oxide'].sum()
+            n_non_oxide = len(df) - n_oxide
+            print(f"    - {file.name}: {len(df)} records (含氧:{n_oxide}, 无氧:{n_non_oxide})")
+        
+        df_lindemann = pd.concat(lindemann_dfs, ignore_index=True)
+        print(f"  [OK] Merged: {len(df_lindemann)} records")
+        print(f"  [INFO] ★ 含氧体系使用PtSnO列（包含O原子）")
+        print(f"  [INFO] ★ 无氧体系使用PtSn列")
+    else:
+        # 回退到master文件
+        print(f"  [INFO] Found {len(LINDEMANN_FILES)} lindemann master files")
+        lindemann_dfs = []
+        for file in LINDEMANN_FILES:
+            df = pd.read_csv(file)
+            df.rename(columns={'温度(K)': '温度', 'Lindemann指数': '林德曼指数'}, inplace=True)
+            lindemann_dfs.append(df)
+            print(f"    - {file.name}: {len(df)} records")
+        
+        df_lindemann = pd.concat(lindemann_dfs, ignore_index=True)
+        print(f"  [OK] Merged: {len(df_lindemann)} records")
+        print(f"  [WARNING] 使用master文件，含氧体系的林德曼指数不包含O原子")
     
     # Step 1: 去除完整路径重复(真重复)
     before_path_dedup = len(df_lindemann)
@@ -765,15 +802,25 @@ def load_and_filter_data(no_filter=False):
     print("\n[*] Averaging multiple runs per structure-temperature...")
     print(f"  [INFO] Before averaging: {len(df_lindemann)} records")
     
+    # 检查是否有'方法'列（comparison文件没有这一列）
+    has_method_col = '方法' in df_lindemann.columns
+    
     # 按结构和温度分组,计算平均值和标准差
-    df_averaged = df_lindemann.groupby(['结构', '温度']).agg({
+    agg_dict = {
         '林德曼指数': ['mean', 'std', 'count'],  # 平均值、标准差、样本数
         '目录': 'first',      # 保留第一个路径(用于记录)
-        '方法': 'first',      # 保留第一个方法
-    }).reset_index()
+    }
+    if has_method_col:
+        agg_dict['方法'] = 'first'
+    
+    df_averaged = df_lindemann.groupby(['结构', '温度']).agg(agg_dict).reset_index()
     
     # 展平列名
-    df_averaged.columns = ['结构', '温度', '林德曼指数', 'δ标准差', 'run_count', '目录', '方法']
+    if has_method_col:
+        df_averaged.columns = ['结构', '温度', '林德曼指数', 'δ标准差', 'run_count', '目录', '方法']
+    else:
+        df_averaged.columns = ['结构', '温度', '林德曼指数', 'δ标准差', 'run_count', '目录']
+        df_averaged['方法'] = 'ase'  # 默认值
     
     # 统计信息
     multi_runs = df_averaged[df_averaged['run_count'] > 1]

@@ -66,8 +66,8 @@ GMX_DATA_DIRS = [
     # BASE_DIR / 'data' / 'gmx_msd' / 'collected_gmx_msd',
     # BASE_DIR / 'data' / 'gmx_msd' / 'gmx_msd_results_20251015_184626_collected',
     # 新版unwrap per-atom MSD数据 (2025-11-18)
-    # BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614',
-    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'air' / 'gmx_msd_results_20251124_170114'  # 🌬️ 气象数据
+    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614',
+    # BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'air' / 'gmx_msd_results_20251124_170114'  # 🌬️ 气象数据
 ]
 
 OUTPUT_DIR = BASE_DIR / 'results' / 'msd_curves'
