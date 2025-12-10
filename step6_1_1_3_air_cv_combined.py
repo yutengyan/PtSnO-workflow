@@ -37,18 +37,93 @@ FONT_TICK = 28
 FONT_LABEL = 34
 
 
-def load_cluster_data(csv_path):
-    """加载聚类结果数据"""
+def parse_exclude_points(exclude_args):
+    """
+    解析要排除的点
+    
+    参数:
+        exclude_args: list of str, 例如 ["300K:1,2", "400K:0"]
+    
+    返回:
+        dict: {temp: [indices]} 例如 {300: [1, 2], 400: [0]}
+    """
+    exclude_dict = {}
+    if not exclude_args:
+        return exclude_dict
+    
+    for arg in exclude_args:
+        try:
+            temp_str, indices_str = arg.split(':')
+            temp = int(temp_str.replace('K', ''))
+            indices = [int(i) for i in indices_str.split(',')]
+            exclude_dict[temp] = indices
+        except Exception as e:
+            print(f"  ⚠️ 警告: 无法解析排除点 '{arg}': {e}")
+    
+    return exclude_dict
+
+
+def filter_data(df, exclude_dict):
+    """
+    根据排除规则过滤数据
+    
+    参数:
+        df: DataFrame 包含 'temp', 'delta', 'phase_clustered' 列
+        exclude_dict: dict {temp: [indices]}
+    
+    返回:
+        DataFrame: 过滤后的数据
+    """
+    if not exclude_dict:
+        return df
+    
+    # 创建掩码
+    mask = np.ones(len(df), dtype=bool)
+    
+    for temp, indices in exclude_dict.items():
+        # 获取该温度的所有数据
+        temp_mask = df['temp'] == temp
+        temp_indices = np.where(temp_mask)[0]
+        
+        # 按 Lindemann 指数排序（从大到小）
+        temp_df = df[temp_mask].copy()
+        temp_df['original_idx'] = temp_indices
+        temp_df_sorted = temp_df.sort_values('delta', ascending=False)
+        
+        # 标记要排除的点
+        for idx in indices:
+            if idx < len(temp_df_sorted):
+                original_idx = temp_df_sorted.iloc[idx]['original_idx']
+                mask[original_idx] = False
+                lindemann_val = temp_df_sorted.iloc[idx]['delta']
+                print(f"    排除: {temp}K 第{idx}个点 (delta={lindemann_val:.4f})")
+    
+    return df[mask]
+
+
+def load_cluster_data(csv_path, exclude_dict=None):
+    """加载聚类结果数据并过滤"""
     try:
         df = pd.read_csv(csv_path)
+        if exclude_dict:
+            print(f"  原始数据: {len(df)} 条")
+            df = filter_data(df, exclude_dict)
+            print(f"  过滤后: {len(df)} 条")
         return df
     except Exception as e:
         print(f"  错误: 无法读取 {csv_path}: {e}")
         return None
 
 
-def compute_partition_data(df, structure_name):
-    """计算分区热容数据"""
+def compute_partition_data(df, structure_name, custom_partitions=None, peak_method='fit'):
+    """计算分区热容数据
+    
+    参数:
+        df: 聚类结果数据
+        structure_name: 结构名称
+        custom_partitions: 自定义分区列表，格式为 [(T_min1, T_max1), (T_min2, T_max2), ...]
+        peak_method: 热容峰计算方法 ('data', 'partition', 'fit')
+    """
     
     # 按温度分组计算能量
     temp_groups = df.groupby('temp')
@@ -77,8 +152,18 @@ def compute_partition_data(df, structure_name):
         partition_counts = df_temp['phase_clustered'].value_counts()
         temp_to_partition[temp] = partition_counts.idxmax()
     
+    # 如果指定了自定义分区，使用自定义分区；否则使用聚类结果
+    if custom_partitions is not None:
+        # 使用自定义分区
+        for i, (T_min, T_max) in enumerate(custom_partitions):
+            for temp in temps_unique:
+                if T_min <= temp <= T_max:
+                    temp_to_partition[temp] = i
+        phases = list(range(len(custom_partitions)))
+    else:
+        phases = sorted(df['phase_clustered'].unique())
+    
     # 分区拟合
-    phases = sorted(df['phase_clustered'].unique())
     phase_fits = {}
     
     for phase in phases:
@@ -105,15 +190,78 @@ def compute_partition_data(df, structure_name):
                 'E_std': E_phase_std
             }
     
-    # 分界温度
+    # 分界温度和热容峰计算
     T_boundary = None
+    Cv_peak = None
+    peak_method_used = None
+    
     if len(phases) >= 2:
-        phase1_temps = [t for t, p in temp_to_partition.items() if p == phases[0]]
-        phase2_temps = [t for t, p in temp_to_partition.items() if p == phases[1]]
-        if phase1_temps and phase2_temps:
+        phases_sorted = sorted(phases)
+        phase1_temps = [t for t, p in temp_to_partition.items() if p == phases_sorted[0]]
+        phase2_temps = [t for t, p in temp_to_partition.items() if p == phases_sorted[1]]
+        
+        if phase1_temps and phase2_temps and phases_sorted[0] in phase_fits and phases_sorted[1] in phase_fits:
             T1_last = max(phase1_temps)
             T2_first = min(phase2_temps)
             T_boundary = (T1_last + T2_first) / 2
+            
+            fit1 = phase_fits[phases_sorted[0]]
+            fit2 = phase_fits[phases_sorted[1]]
+            Cv1 = fit1['Cv']
+            Cv2 = fit2['Cv']
+            
+            # ========== 方法1a: 所有点平均 ==========
+            idx1 = np.where(temps_unique == T1_last)[0]
+            idx2 = np.where(temps_unique == T2_first)[0]
+            
+            if len(idx1) > 0 and len(idx2) > 0:
+                E1_data = E_rel[idx1[0]]
+                E2_data = E_rel[idx2[0]]
+                Cv_transition_data = (E2_data - E1_data) / (T2_first - T1_last) * 1000  # meV/K
+            else:
+                Cv_transition_data = (Cv1 + Cv2) / 2
+            
+            # ========== 方法1b: 只用归属于该分区的点 ==========
+            df_T1 = df[df['temp'] == T1_last]
+            df_T2 = df[df['temp'] == T2_first]
+            
+            partition_T1 = temp_to_partition[T1_last]
+            partition_T2 = temp_to_partition[T2_first]
+            
+            df_T1_filtered = df_T1[df_T1['phase_clustered'] == partition_T1]
+            df_T2_filtered = df_T2[df_T2['phase_clustered'] == partition_T2]
+            
+            if len(df_T1_filtered) > 0 and len(df_T2_filtered) > 0:
+                E1_partition = df_T1_filtered['avg_energy'].mean()
+                E2_partition = df_T2_filtered['avg_energy'].mean()
+                
+                Cv_transition_partition = (E2_partition - E1_partition) / (T2_first - T1_last) * 1000
+                
+                n_T1_total = len(df_T1)
+                n_T1_used = len(df_T1_filtered)
+                n_T2_total = len(df_T2)
+                n_T2_used = len(df_T2_filtered)
+                print(f"  {structure_name} 分区点法: T1={T1_last}K 用{n_T1_used}/{n_T1_total}点({partition_T1}), "
+                      f"T2={T2_first}K 用{n_T2_used}/{n_T2_total}点({partition_T2}), "
+                      f"Cv={Cv_transition_partition:.2f} meV/K")
+            else:
+                Cv_transition_partition = Cv_transition_data
+            
+            # ========== 方法2: 拟合线外推 ==========
+            E1_fit = fit1['slope'] * T1_last + fit1['intercept']
+            E2_fit = fit2['slope'] * T2_first + fit2['intercept']
+            Cv_transition_fit = (E2_fit - E1_fit) / (T2_first - T1_last) * 1000  # meV/K
+            
+            # 根据选择的方法选择热容峰
+            if peak_method == 'data':
+                Cv_peak = Cv_transition_data
+                peak_method_used = "全点数据法"
+            elif peak_method == 'partition':
+                Cv_peak = Cv_transition_partition
+                peak_method_used = "分区点法"
+            else:  # 'fit'
+                Cv_peak = Cv_transition_fit
+                peak_method_used = "拟合线外推法"
     
     return {
         'temps': temps_unique,
@@ -122,7 +270,9 @@ def compute_partition_data(df, structure_name):
         'temp_to_partition': temp_to_partition,
         'phase_fits': phase_fits,
         'T_boundary': T_boundary,
-        'phases': phases
+        'phases': phases,
+        'Cv_peak': Cv_peak,
+        'peak_method_used': peak_method_used
     }
 
 
@@ -142,23 +292,15 @@ def compute_unified_ylims(data_68, data_86):
         for fit in data['phase_fits'].values():
             all_Cv.append(fit['Cv'])
         # 检查是否有峰
-        if len(data['phases']) >= 2:
-            phases = sorted(data['phases'])
-            fit1 = data['phase_fits'].get(phases[0])
-            fit2 = data['phase_fits'].get(phases[1])
-            if fit1 and fit2:
-                T1_last = fit1['T_range'][1]
-                T2_first = fit2['T_range'][0]
-                idx1 = np.where(data['temps'] == T1_last)[0]
-                idx2 = np.where(data['temps'] == T2_first)[0]
-                if len(idx1) > 0 and len(idx2) > 0:
-                    E1 = data['E_rel'][idx1[0]]
-                    E2 = data['E_rel'][idx2[0]]
-                    Cv_trans = (E2 - E1) / (T2_first - T1_last) * 1000
-                    all_Cv.append(Cv_trans)
+        if data['Cv_peak'] is not None:
+            all_Cv.append(data['Cv_peak'])
     
-    Cv_min = min(all_Cv) * 0.85
-    Cv_max = max(all_Cv) * 1.1
+    if all_Cv:
+        Cv_min = min(all_Cv) * 0.85
+        Cv_max = max(all_Cv) * 1.1
+    else:
+        Cv_min, Cv_max = 0, 10
+    
     Cv_ylim = (Cv_min, Cv_max)
     
     return E_ylim, Cv_ylim
@@ -174,6 +316,7 @@ def plot_single_partition(data, title, output_path, E_ylim, Cv_ylim, figsize=(10
     phase_fits = data['phase_fits']
     phases = sorted(data['phases'])
     T_boundary = data['T_boundary']
+    Cv_peak = data.get('Cv_peak')
     
     # 左Y轴: 能量数据点
     ax1.errorbar(temps, E_rel, yerr=E_std,
@@ -215,19 +358,11 @@ def plot_single_partition(data, title, output_path, E_ylim, Cv_ylim, figsize=(10
         Cv1 = phase_fits[phases[0]]['Cv']
         Cv2 = phase_fits[phases[1]]['Cv']
         
-        # 计算过渡区热容
-        fit1 = phase_fits[phases[0]]
-        fit2 = phase_fits[phases[1]]
-        T1_last = fit1['T_range'][1]
-        T2_first = fit2['T_range'][0]
-        idx1 = np.where(temps == T1_last)[0]
-        idx2 = np.where(temps == T2_first)[0]
-        
-        if len(idx1) > 0 and len(idx2) > 0:
-            E1 = E_rel[idx1[0]]
-            E2 = E_rel[idx2[0]]
-            Cv_transition = (E2 - E1) / (T2_first - T1_last) * 1000
+        # 使用从 compute_partition_data 计算的 Cv_peak
+        if Cv_peak is not None:
+            Cv_transition = Cv_peak
         else:
+            # 备用: 如果 Cv_peak 为空，计算平均值
             Cv_transition = (Cv1 + Cv2) / 2
         
         has_peak = Cv_transition > max(Cv1, Cv2)
@@ -235,7 +370,7 @@ def plot_single_partition(data, title, output_path, E_ylim, Cv_ylim, figsize=(10
         if has_peak:
             # 带峰的热容曲线
             T_plot = np.linspace(temps.min(), temps.max(), 500)
-            sigma = (T2_first - T1_last) / 2
+            sigma = (T_boundary - temps.min() + temps.max() - T_boundary) / 4  # 自适应宽度
             Cv_plot = np.zeros_like(T_plot)
             
             for i, T in enumerate(T_plot):
@@ -251,8 +386,9 @@ def plot_single_partition(data, title, output_path, E_ylim, Cv_ylim, figsize=(10
             ax2.plot([T_boundary, T_boundary], [Cv1, Cv2], 'r--', linewidth=2, zorder=3)
             ax2.plot([T_boundary, temps.max()], [Cv2, Cv2], 'r-', linewidth=2.5, zorder=3)
     else:
-        Cv_single = list(phase_fits.values())[0]['Cv']
-        ax2.axhline(y=Cv_single, color='red', linewidth=2.5, zorder=3)
+        if phase_fits:
+            Cv_single = list(phase_fits.values())[0]['Cv']
+            ax2.axhline(y=Cv_single, color='red', linewidth=2.5, zorder=3)
     
     ax2.set_ylabel(r'$C_v$ (meV/K)', fontsize=FONT_LABEL, color='red')
     ax2.tick_params(axis='y', labelcolor='red', labelsize=FONT_TICK, color='red')
@@ -511,29 +647,33 @@ def plot_combined_cv_with_params(data_68, data_86, output_dir, params):
     cv_integer = params['cv_integer']
     y_ticks_custom = params.get('y_ticks_custom', None)
     cv_ticks_custom = params.get('cv_ticks_custom', None)
+    show_error_bars = params.get('show_error_bars', False)
     
     # 子图1: Pt8Sn6 (Air86)
     plot_single_partition_with_params(data_86, r'Pt$_8$Sn$_6$', 
                                       output_dir / 'Air86_Pt8Sn6_partition_cv.png',
                                       E_ylim, Cv_ylim, figsize, y_nticks, y_integer, 
-                                      cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom)
+                                      cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom,
+                                      show_error_bars)
     
     # 子图2: Pt6Sn8 (Air68) - 分区
     plot_single_partition_with_params(data_68, r'Pt$_6$Sn$_8$ (partition)', 
                                       output_dir / 'Air68_Pt6Sn8_partition_cv.png',
                                       E_ylim, Cv_ylim, figsize, y_nticks, y_integer, 
-                                      cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom)
+                                      cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom,
+                                      show_error_bars)
     
     # 子图3: Pt6Sn8 (Air68) - 单一拟合
     plot_single_linear_fit_with_params(data_68, r'Pt$_6$Sn$_8$ (single fit)', 
                                        output_dir / 'Air68_Pt6Sn8_single_fit_cv.png',
                                        E_ylim, Cv_ylim, figsize, y_nticks, y_integer, 
-                                       cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom)
+                                       cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom,
+                                       show_error_bars)
 
 
 def plot_single_partition_with_params(data, title, output_path, E_ylim, Cv_ylim, 
                                       figsize, y_nticks, y_integer, cv_nticks, cv_integer,
-                                      y_ticks_custom=None, cv_ticks_custom=None):
+                                      y_ticks_custom=None, cv_ticks_custom=None, show_error_bars=False):
     """带参数的分区热容图绘制"""
     from matplotlib.ticker import MaxNLocator, LinearLocator, MultipleLocator
     
@@ -546,8 +686,16 @@ def plot_single_partition_with_params(data, title, output_path, E_ylim, Cv_ylim,
     phases = sorted(data['phases'])
     T_boundary = data['T_boundary']
     
-    ax1.errorbar(temps, E_rel, yerr=E_std, fmt='o', markersize=10, color='black',
-                 ecolor='gray', elinewidth=2, capsize=4, capthick=2, zorder=5)
+    # 根据 show_error_bars 参数选择绘制方式
+    if show_error_bars:
+        # 显示误差棒模式：黑色实心大点 + 误差棒，不显示散点
+        ax1.errorbar(temps, E_rel, yerr=E_std, fmt='o', markersize=14, 
+                     markerfacecolor='black', markeredgecolor='black',
+                     ecolor='black', elinewidth=2.5, capsize=6, capthick=2.5, zorder=5)
+    else:
+        # 默认模式：空心点 + 灰色误差棒
+        ax1.errorbar(temps, E_rel, yerr=E_std, fmt='o', markersize=10, color='black',
+                     ecolor='gray', elinewidth=2, capsize=4, capthick=2, zorder=5)
     
     for phase in phases:
         if phase in phase_fits:
@@ -653,7 +801,7 @@ def plot_single_partition_with_params(data, title, output_path, E_ylim, Cv_ylim,
 
 def plot_single_linear_fit_with_params(data, title, output_path, E_ylim, Cv_ylim,
                                        figsize, y_nticks, y_integer, cv_nticks, cv_integer,
-                                       y_ticks_custom=None, cv_ticks_custom=None):
+                                       y_ticks_custom=None, cv_ticks_custom=None, show_error_bars=False):
     """带参数的单一拟合图绘制"""
     from matplotlib.ticker import MaxNLocator, LinearLocator, MultipleLocator
     
@@ -663,8 +811,16 @@ def plot_single_linear_fit_with_params(data, title, output_path, E_ylim, Cv_ylim
     E_rel = data['E_rel']
     E_std = data['E_std']
     
-    ax1.errorbar(temps, E_rel, yerr=E_std, fmt='o', markersize=10, color='black',
-                 ecolor='gray', elinewidth=2, capsize=4, capthick=2, zorder=5)
+    # 根据 show_error_bars 参数选择绘制方式
+    if show_error_bars:
+        # 显示误差棒模式：黑色实心大点 + 误差棒
+        ax1.errorbar(temps, E_rel, yerr=E_std, fmt='o', markersize=14,
+                     markerfacecolor='black', markeredgecolor='black',
+                     ecolor='black', elinewidth=2.5, capsize=6, capthick=2.5, zorder=5)
+    else:
+        # 默认模式：空心点 + 灰色误差棒
+        ax1.errorbar(temps, E_rel, yerr=E_std, fmt='o', markersize=10, color='black',
+                     ecolor='gray', elinewidth=2, capsize=4, capthick=2, zorder=5)
     
     slope, intercept, r_value, _, std_err = linregress(temps, E_rel)
     Cv_overall = slope * 1000
@@ -724,6 +880,8 @@ def main():
   python step6_1_1_3_air_cv_combined.py --y-nticks 3 --cv-nticks 4
   python step6_1_1_3_air_cv_combined.py --y-ticks 0,2,4 --cv-ticks 3,4,5,6,7
   python step6_1_1_3_air_cv_combined.py --figsize 12x10 --y-ticks 0,2,4
+  python step6_1_1_3_air_cv_combined.py --peak-method partition --partitions-68 200-500,600-1100 --partitions-86 200-700,800-1100
+  python step6_1_1_3_air_cv_combined.py --peak-method partition --partitions-both 200-400,500-1100
 '''
     )
     parser.add_argument('--figsize', type=str, default='10x8',
@@ -740,6 +898,21 @@ def main():
                        help='手动指定Cv轴刻度，逗号分隔，例如: 3,4,5,6,7')
     parser.add_argument('--no-integer', action='store_true',
                        help='Y轴不使用整数刻度（仅在未指定 --y-ticks 时有效）')
+    parser.add_argument('--partitions-68', '-p68', type=str, default=None,
+                       help='Air68 分区，格式: T_min1-T_max1,T_min2-T_max2，例如: 200-500,600-1100')
+    parser.add_argument('--partitions-86', '-p86', type=str, default=None,
+                       help='Air86 分区，格式: T_min1-T_max1,T_min2-T_max2，例如: 200-700,800-1100')
+    parser.add_argument('--partitions-both', '-pb', type=str, default=None,
+                       help='同时应用到两个系统的分区，格式: T_min1-T_max1,T_min2-T_max2，例如: 200-400,500-1100')
+    parser.add_argument('--peak-method', type=str, default='fit',
+                       choices=['data', 'partition', 'fit'],
+                       help='热容峰计算方法: data(全点法), partition(分区点法★推荐), fit(拟合法) (默认: fit)')
+    parser.add_argument('--exclude-68', nargs='+', metavar='TEMP:INDICES',
+                       help='Air68 要排除的点，格式: "300K:0,1" "400K:0"')
+    parser.add_argument('--exclude-86', nargs='+', metavar='TEMP:INDICES',
+                       help='Air86 要排除的点，格式: "500K:0,1" "600K:0"')
+    parser.add_argument('--show-error-bars', action='store_true',
+                       help='显示误差棒（不显示散点，用黑色实心大点+误差棒替代）')
     args = parser.parse_args()
     
     # 解析figsize
@@ -749,6 +922,59 @@ def main():
     except ValueError:
         print(f"警告: 无效的figsize格式 '{args.figsize}'，使用默认 10x8")
         figsize = (10, 8)
+    
+    # 解析分区参数：支持 --partitions-68, --partitions-86, 或 --partitions-both
+    custom_partitions_68 = None
+    custom_partitions_86 = None
+    
+    # 优先级: --partitions-68/86 > --partitions-both
+    if args.partitions_68 or args.partitions_86:
+        # 分别指定两个系统
+        if args.partitions_68:
+            try:
+                custom_partitions_68 = []
+                for part in args.partitions_68.split(','):
+                    T_min, T_max = map(int, part.split('-'))
+                    custom_partitions_68.append((T_min, T_max))
+                print(f"  Air68 分区: {custom_partitions_68}")
+            except ValueError:
+                print(f"警告: 无效的 --partitions-68 格式 '{args.partitions_68}'，将使用聚类结果")
+                custom_partitions_68 = None
+        
+        if args.partitions_86:
+            try:
+                custom_partitions_86 = []
+                for part in args.partitions_86.split(','):
+                    T_min, T_max = map(int, part.split('-'))
+                    custom_partitions_86.append((T_min, T_max))
+                print(f"  Air86 分区: {custom_partitions_86}")
+            except ValueError:
+                print(f"警告: 无效的 --partitions-86 格式 '{args.partitions_86}'，将使用聚类结果")
+                custom_partitions_86 = None
+    
+    elif args.partitions_both:
+        # 同时应用到两个系统
+        try:
+            partitions_both = []
+            for part in args.partitions_both.split(','):
+                T_min, T_max = map(int, part.split('-'))
+                partitions_both.append((T_min, T_max))
+            custom_partitions_68 = partitions_both
+            custom_partitions_86 = partitions_both
+            print(f"  两个系统分区: {partitions_both}")
+        except ValueError:
+            print(f"警告: 无效的 --partitions-both 格式 '{args.partitions_both}'，将使用聚类结果")
+            custom_partitions_68 = None
+            custom_partitions_86 = None
+    
+    # 解析排除点参数
+    exclude_68 = parse_exclude_points(args.exclude_68)
+    exclude_86 = parse_exclude_points(args.exclude_86)
+    
+    if exclude_68:
+        print(f"  Air68 排除点: {exclude_68}")
+    if exclude_86:
+        print(f"  Air86 排除点: {exclude_86}")
     
     # 解析自定义刻度
     y_ticks_custom = None
@@ -772,6 +998,7 @@ def main():
     print("Step 6.1.1.3: Air68 vs Air86 分区热容独立子图")
     print("=" * 60)
     print(f"  图片尺寸: {figsize[0]}x{figsize[1]}")
+    print(f"  热容峰方法: {args.peak_method}")
     
     # 加载数据
     base_dir = Path('results/step6_1_clustering')
@@ -787,19 +1014,22 @@ def main():
         return
     
     print(f"\n>>> 加载数据...")
-    df_68 = load_cluster_data(csv_68)
-    df_86 = load_cluster_data(csv_86)
+    print("  Air68:")
+    df_68 = load_cluster_data(csv_68, exclude_68)
+    print("  Air86:")
+    df_86 = load_cluster_data(csv_86, exclude_86)
     
     if df_68 is None or df_86 is None:
         return
     
+    print(f"\n  最终数据:")
     print(f"    Air68: {len(df_68)} 条记录")
     print(f"    Air86: {len(df_86)} 条记录")
     
     # 计算分区数据
     print(f"\n>>> 计算分区热容...")
-    data_68 = compute_partition_data(df_68, 'Air68')
-    data_86 = compute_partition_data(df_86, 'Air86')
+    data_68 = compute_partition_data(df_68, 'Air68', custom_partitions=custom_partitions_68, peak_method=args.peak_method)
+    data_86 = compute_partition_data(df_86, 'Air86', custom_partitions=custom_partitions_86, peak_method=args.peak_method)
     
     # 打印热容信息
     for name, data in [('Air68 (Pt6Sn8)', data_68), ('Air86 (Pt8Sn6)', data_86)]:
@@ -809,6 +1039,8 @@ def main():
                   f"T={fit['T_range'][0]:.0f}-{fit['T_range'][1]:.0f}K")
         if data['T_boundary']:
             print(f"    分界温度: {data['T_boundary']:.0f} K")
+        if data['Cv_peak'] is not None:
+            print(f"    热容峰({data['peak_method_used']}): Cv_peak={data['Cv_peak']:.2f} meV/K")
     
     # 绘制图片
     output_dir = Path('results/step6_1_1_partition_cv')
@@ -829,6 +1061,7 @@ def main():
             'cv_integer': y_integer,
             'y_ticks_custom': y_ticks_custom,      # 自定义Y轴刻度
             'cv_ticks_custom': cv_ticks_custom,    # 自定义Cv轴刻度
+            'show_error_bars': args.show_error_bars,  # 是否显示误差棒
         }
         plot_combined_cv_with_params(data_68, data_86, output_dir, params)
     
