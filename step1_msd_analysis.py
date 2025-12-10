@@ -54,17 +54,36 @@ if sys.platform == 'win32':
         import os
         os.environ['PYTHONIOENCODING'] = 'utf-8'
 
+import argparse
+
 # ==================== 可调参数 ====================
 
 # 基础目录
 BASE_DIR = Path(__file__).parent
 
-# 数据源目录
-GMX_DATA_DIRS = [
-    # BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'air' / 'gmx_msd_results_20251124_170114'
-        # 新版unwrap per-atom MSD数据 (2025-11-18)
-    BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614',
-]
+# 数据源目录配置
+DATA_SOURCE_CONFIGS = {
+    'default': {
+        'dirs': [
+            # 新版unwrap per-atom MSD数据 (2025-11-18)
+            BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614',
+            # Air数据 (气相纳米团簇)
+            BASE_DIR / 'data' / 'gmx_msd' / 'unwrap' / 'air' / 'gmx_msd_results_20251124_170114',
+        ],
+        'output_dir': BASE_DIR / 'results',
+        'description': '默认数据集 (100K温度间隔, 含Air)',
+    },
+    '50K': {
+        'dirs': [
+            BASE_DIR / 'data' / 'for-more-50K' / 'gmx_msd_results_20251208_192450',
+        ],
+        'output_dir': BASE_DIR / 'data' / 'for-more-50K',
+        'description': '50K温度间隔数据集',
+    },
+}
+
+# 默认数据源目录 (向后兼容)
+GMX_DATA_DIRS = DATA_SOURCE_CONFIGS['default']['dirs']
 
 # 输出目录
 OUTPUT_DIR = BASE_DIR / 'results'
@@ -334,13 +353,35 @@ def ensemble_average_msd(file_list):
 def main():
     """主程序 - 整合异常检测和集合平均"""
     
+    global GMX_DATA_DIRS, OUTPUT_DIR
+    
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='GMX MSD综合分析 - 异常检测 + 集合平均')
+    parser.add_argument('--data-source', type=str, default='default',
+                        choices=['default', '50K'],
+                        help='数据源: default (100K间隔) 或 50K (50K间隔)')
+    args = parser.parse_args()
+    
+    # 根据数据源配置目录
+    data_config = DATA_SOURCE_CONFIGS[args.data_source]
+    GMX_DATA_DIRS = data_config['dirs']
+    OUTPUT_DIR = data_config['output_dir']
+    
     print("=" * 80)
     print("GMX MSD综合分析 - Step1.2 (异常检测 + 集合平均)".center(80))
     print("=" * 80)
     print()
     
+    print(f"[数据源配置]")
+    print(f"  数据源: {args.data_source}")
+    print(f"  描述: {data_config['description']}")
+    print(f"  数据目录: {GMX_DATA_DIRS}")
+    print(f"  输出目录: {OUTPUT_DIR}")
+    print()
+    
     # 创建输出目录
     Path(OUTPUT_DIR).mkdir(exist_ok=True, parents=True)
+
     
     # ========================================================================
     # 阶段1: 扫描和解析文件

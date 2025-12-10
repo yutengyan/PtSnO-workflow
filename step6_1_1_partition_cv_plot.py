@@ -76,6 +76,69 @@ def find_clustering_results(base_dir='results/step6_1_clustering'):
     return results
 
 
+def classify_structure(name):
+    """
+    分类结构名称
+    返回: dict with classification flags
+    """
+    import re
+    name_lower = name.lower()
+    
+    pt_match = re.search(r'pt(\d+)', name_lower)
+    sn_match = re.search(r'sn(\d+)', name_lower)
+    o_match = re.search(r'o(\d+)', name_lower)
+    
+    pt_num = int(pt_match.group(1)) if pt_match else 0
+    sn_num = int(sn_match.group(1)) if sn_match else 0
+    o_num = int(o_match.group(1)) if o_match else 0
+    
+    result = {}
+    
+    # Air 系列
+    if name_lower.startswith('air'):
+        result['air'] = True
+        return result
+    
+    # 含氧
+    if o_num > 0:
+        result['oxide'] = True
+        return result
+    
+    # Pt8SnX 系列
+    if pt_num == 8:
+        result['pt8snx'] = True
+    
+    # Pt6SnX 系列
+    if pt_num == 6:
+        result['pt6snx'] = True
+    
+    # Sum8 系列 (Pt+Sn=8)
+    if pt_num + sn_num == 8 and o_num == 0:
+        result['sum8'] = True
+    
+    return result
+
+
+def filter_structures_by_series(available, series_list):
+    """
+    根据系列筛选结构
+    
+    Args:
+        available: dict of structure_name -> csv_path
+        series_list: list of series names like ['pt8snx', 'pt6snx']
+    
+    Returns: filtered list of structure names
+    """
+    filtered = []
+    for name in available.keys():
+        classification = classify_structure(name)
+        for series in series_list:
+            if classification.get(series, False):
+                filtered.append(name)
+                break
+    return filtered
+
+
 def load_support_energy_data():
     """加载载体能量数据"""
     support_csv = 'data/lammps_energy/sup/energy_master_20251021_151520.csv'
@@ -106,13 +169,13 @@ def load_cluster_data(csv_path):
         return None
 
 
-def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None):
+def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None, custom_partitions=None, peak_method='fit', remove_outliers=False, outlier_iqr=1.5):
     """
     绘制分区热容拟合图（论文出图专用）
     
     核心逻辑：
     1. 按温度分组计算团簇能量平均值和标准差
-    2. 使用多数投票规则将每个温度分配给唯一的相态
+    2. 使用多数投票规则将每个温度分配给唯一的相态（或使用自定义分区）
     3. 对每个相态的专属温度点进行线性拟合
     4. 绘制整体拟合线 vs 分区拟合线对比
     
@@ -122,6 +185,17 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         - y_nticks: Y轴刻度数量
         - cv_nticks: Cv轴刻度数量
         - figsize: 图片尺寸 (宽, 高)
+    
+    custom_partitions: 自定义分区列表，格式为 [(T_min1, T_max1), (T_min2, T_max2), ...]
+        例如: [(200, 700), (750, 950)] 表示第一分区200-700K，第二分区750-950K
+        如果为 None，则使用聚类结果的多数投票规则
+    
+    peak_method: 热容峰计算方法
+        - 'data': 数据点法 - 使用实际数据点的能量差计算过渡区热容
+        - 'fit': 拟合线外推法 - 使用拟合线外推的能量差计算过渡区热容
+    
+    remove_outliers: 是否剔除离群点
+    outlier_iqr: IQR倍数阈值，默认1.5
     """
     
     # 默认刻度参数
@@ -161,22 +235,129 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
             intercept_support = E_total_min * 0.9 - slope_support * T_min
             print(f"  [警告] 使用默认Cv_support估算载体能量")
     
-    # ========== 1. 按温度分组计算团簇能量 ==========
+    # ========== 1. 按温度分组计算团簇能量（可选离群点剔除） ==========
     temp_groups = df.groupby('temp')
     temps_unique = []
     E_cluster_mean = []
     E_cluster_std = []
+    outlier_stats = {'total_removed': 0, 'by_temp': {}, 'details': {}}
+    
+    # 解析离群点剔除参数
+    outlier_method = 'iqr'  # 默认方法
+    outlier_threshold = outlier_iqr
+    outlier_iterations = 1  # 默认迭代次数
+    
+    if isinstance(remove_outliers, str):
+        # 解析格式: "method:threshold:iterations" 或 "method:threshold" 或 "method"
+        parts = remove_outliers.split(':')
+        outlier_method = parts[0].lower()
+        if len(parts) >= 2:
+            outlier_threshold = float(parts[1])
+        if len(parts) >= 3:
+            outlier_iterations = int(parts[2])
+    elif remove_outliers is True:
+        outlier_method = 'iqr'
+        outlier_threshold = outlier_iqr
     
     for temp, group in temp_groups:
         if is_air_system:
-            E_cluster = group['avg_energy'].values
+            E_cluster = group['avg_energy'].values.copy()
         else:
             E_support = slope_support * temp + intercept_support
             E_cluster = group['avg_energy'].values - E_support
         
+        # 离群点剔除 - 仅当 remove_outliers 不为 False 时启用
+        if remove_outliers:
+            n_before = len(E_cluster)
+            removed_values = []
+            
+            # 迭代剔除
+            for iteration in range(outlier_iterations):
+                if len(E_cluster) < 4:
+                    break
+                    
+                if outlier_method == 'iqr':
+                    # IQR 方法
+                    Q1 = np.percentile(E_cluster, 25)
+                    Q3 = np.percentile(E_cluster, 75)
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - outlier_threshold * IQR
+                    upper_bound = Q3 + outlier_threshold * IQR
+                    
+                elif outlier_method == 'zscore':
+                    # Z-score 方法
+                    mean = np.mean(E_cluster)
+                    std = np.std(E_cluster)
+                    if std > 0:
+                        lower_bound = mean - outlier_threshold * std
+                        upper_bound = mean + outlier_threshold * std
+                    else:
+                        lower_bound = mean - 1e-10
+                        upper_bound = mean + 1e-10
+                        
+                elif outlier_method == 'mad':
+                    # MAD (Median Absolute Deviation) 方法 - 对异常值更鲁棒
+                    median = np.median(E_cluster)
+                    mad = np.median(np.abs(E_cluster - median))
+                    if mad > 0:
+                        lower_bound = median - outlier_threshold * 1.4826 * mad
+                        upper_bound = median + outlier_threshold * 1.4826 * mad
+                    else:
+                        lower_bound = median - 1e-10
+                        upper_bound = median + 1e-10
+                        
+                elif outlier_method == 'percentile':
+                    # 百分位数方法 - 直接剔除最极端的点
+                    lower_bound = np.percentile(E_cluster, outlier_threshold)
+                    upper_bound = np.percentile(E_cluster, 100 - outlier_threshold)
+                    
+                else:
+                    # 默认 IQR
+                    Q1 = np.percentile(E_cluster, 25)
+                    Q3 = np.percentile(E_cluster, 75)
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - outlier_threshold * IQR
+                    upper_bound = Q3 + outlier_threshold * IQR
+                
+                mask = (E_cluster >= lower_bound) & (E_cluster <= upper_bound)
+                outliers_this_iter = E_cluster[~mask]
+                removed_values.extend(outliers_this_iter.tolist())
+                E_cluster = E_cluster[mask]
+                
+                if len(outliers_this_iter) == 0:
+                    break  # 没有更多离群点
+            
+            n_removed = n_before - len(E_cluster)
+            if n_removed > 0:
+                outlier_stats['total_removed'] += n_removed
+                outlier_stats['by_temp'][temp] = n_removed
+                outlier_stats['details'][temp] = removed_values
+        
         temps_unique.append(temp)
         E_cluster_mean.append(np.mean(E_cluster))
-        E_cluster_std.append(np.std(E_cluster))
+        E_cluster_std.append(np.std(E_cluster) if len(E_cluster) > 1 else 0)
+    
+    # 输出离群点剔除统计
+    if remove_outliers:
+        method_names = {
+            'iqr': f'IQR×{outlier_threshold}',
+            'zscore': f'Z-score>{outlier_threshold}σ',
+            'mad': f'MAD×{outlier_threshold}',
+            'percentile': f'百分位{outlier_threshold}%-{100-outlier_threshold}%'
+        }
+        method_desc = method_names.get(outlier_method, outlier_method)
+        iter_desc = f", {outlier_iterations}次迭代" if outlier_iterations > 1 else ""
+        
+        if outlier_stats['total_removed'] > 0:
+            print(f"\n  [离群点剔除] 共剔除 {outlier_stats['total_removed']} 个点 ({method_desc}{iter_desc})")
+            for temp, n in sorted(outlier_stats['by_temp'].items()):
+                values = outlier_stats['details'].get(temp, [])
+                values_str = ', '.join([f'{v:.4f}' for v in values[:3]])
+                if len(values) > 3:
+                    values_str += f'... (共{len(values)}个)'
+                print(f"    T={temp:.0f}K: 剔除 {n} 个点 [{values_str}]")
+        else:
+            print(f"\n  [离群点剔除] 未发现离群点 ({method_desc}{iter_desc})")
     
     temps_unique = np.array(temps_unique)
     E_cluster_mean = np.array(E_cluster_mean)
@@ -186,16 +367,45 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     E_cluster_ref = E_cluster_mean.min()
     E_cluster_mean_rel = E_cluster_mean - E_cluster_ref
     
-    # ========== 2. 多数投票确定每个温度的专属相态 ==========
+    # ========== 2. 确定每个温度的分区 ==========
     temp_to_partition = {}
-    print(f"\n  多数投票温度分配:")
     
-    for temp in temps_unique:
-        df_temp = df[df['temp'] == temp]
-        partition_counts = df_temp['phase_clustered'].value_counts()
-        dominant_partition = partition_counts.idxmax()
-        temp_to_partition[temp] = dominant_partition
-        print(f"    T={temp:4.0f}K: {dict(partition_counts)} → {dominant_partition}")
+    if custom_partitions is not None:
+        # 使用自定义分区
+        print(f"\n  使用自定义分区:")
+        for i, (T_min, T_max) in enumerate(custom_partitions):
+            partition_name = f'partition{i+1}'
+            print(f"    {partition_name}: {T_min}K - {T_max}K")
+            for temp in temps_unique:
+                if T_min <= temp <= T_max:
+                    temp_to_partition[temp] = partition_name
+        
+        # 检查是否有未分配的温度
+        unassigned = [t for t in temps_unique if t not in temp_to_partition]
+        if unassigned:
+            print(f"  警告: 以下温度未被分配到任何分区: {unassigned}")
+            # 将未分配温度归入最近的分区
+            for temp in unassigned:
+                # 找到最近的分区边界
+                min_dist = float('inf')
+                nearest_partition = None
+                for i, (T_min, T_max) in enumerate(custom_partitions):
+                    partition_name = f'partition{i+1}'
+                    dist = min(abs(temp - T_min), abs(temp - T_max))
+                    if dist < min_dist:
+                        min_dist = dist
+                        nearest_partition = partition_name
+                temp_to_partition[temp] = nearest_partition
+                print(f"    T={temp}K → {nearest_partition} (按最近原则)")
+    else:
+        # 使用多数投票规则（原有逻辑）
+        print(f"\n  多数投票温度分配:")
+        for temp in temps_unique:
+            df_temp = df[df['temp'] == temp]
+            partition_counts = df_temp['phase_clustered'].value_counts()
+            dominant_partition = partition_counts.idxmax()
+            temp_to_partition[temp] = dominant_partition
+            print(f"    T={temp:4.0f}K: {dict(partition_counts)} → {dominant_partition}")
     
     # ========== 3. 整体拟合 ==========
     if len(temps_unique) < 3:
@@ -320,22 +530,91 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
             Cv1 = phase_fits[phases_sorted[0]]['Cv']
             Cv2 = phase_fits[phases_sorted[1]]['Cv']
             
-            # 计算过渡区热容（数值微分）
+            # ========== 方法1: 实际数据点的数值微分 ==========
+            # 注意：这里使用的是按温度平均的能量（所有run的平均，不区分分区归属）
             idx1 = np.where(temps_unique == T1_last)[0]
             idx2 = np.where(temps_unique == T2_first)[0]
             if len(idx1) > 0 and len(idx2) > 0:
-                E1 = E_cluster_mean_rel[idx1[0]]
-                E2 = E_cluster_mean_rel[idx2[0]]
-                Cv_transition = (E2 - E1) / (T2_first - T1_last) * 1000  # meV/K
+                E1_data = E_cluster_mean_rel[idx1[0]]
+                E2_data = E_cluster_mean_rel[idx2[0]]
+                Cv_transition_data = (E2_data - E1_data) / (T2_first - T1_last) * 1000  # meV/K
             else:
-                Cv_transition = (Cv1 + Cv2) / 2
+                Cv_transition_data = (Cv1 + Cv2) / 2
+            
+            # ========== 方法1b: 只用归属于该分区的点的能量 ==========
+            # T1_last (如650K) 被分给分区1，只用分区1的点计算能量
+            # T2_first (如700K) 被分给分区2，只用分区2的点计算能量
+            df_T1 = df[df['temp'] == T1_last]
+            df_T2 = df[df['temp'] == T2_first]
+            
+            # 获取该温度被分配到的分区
+            partition_T1 = temp_to_partition[T1_last]
+            partition_T2 = temp_to_partition[T2_first]
+            
+            # 筛选只属于该分区的点
+            df_T1_filtered = df_T1[df_T1['phase_clustered'] == partition_T1]
+            df_T2_filtered = df_T2[df_T2['phase_clustered'] == partition_T2]
+            
+            if len(df_T1_filtered) > 0 and len(df_T2_filtered) > 0:
+                if is_air_system:
+                    E1_partition = df_T1_filtered['avg_energy'].mean()
+                    E2_partition = df_T2_filtered['avg_energy'].mean()
+                else:
+                    E_support_T1 = slope_support * T1_last + intercept_support
+                    E_support_T2 = slope_support * T2_first + intercept_support
+                    E1_partition = df_T1_filtered['avg_energy'].mean() - E_support_T1
+                    E2_partition = df_T2_filtered['avg_energy'].mean() - E_support_T2
+                
+                # 转换为相对能量
+                E1_partition_rel = E1_partition - E_cluster_ref - (E_cluster_mean[0] - E_cluster_ref)
+                E2_partition_rel = E2_partition - E_cluster_ref - (E_cluster_mean[0] - E_cluster_ref)
+                
+                # 直接用绝对能量差计算
+                Cv_transition_partition = (E2_partition - E1_partition) / (T2_first - T1_last) * 1000
+                
+                n_T1_total = len(df_T1)
+                n_T1_used = len(df_T1_filtered)
+                n_T2_total = len(df_T2)
+                n_T2_used = len(df_T2_filtered)
+                print(f"    分区点法: T1={T1_last}K 用{n_T1_used}/{n_T1_total}点({partition_T1}), "
+                      f"T2={T2_first}K 用{n_T2_used}/{n_T2_total}点({partition_T2})")
+                print(f"    分区点法: Cv_transition={Cv_transition_partition:.2f} meV/K")
+            else:
+                Cv_transition_partition = Cv_transition_data
+                print(f"    分区点法: 数据不足，回退到全部数据点")
+            
+            # ========== 方法2: 拟合线外推的能量差 ==========
+            # E1_fit: 用分区1拟合线代入T1_last
+            # E2_fit: 用分区2拟合线代入T2_first
+            fit1 = phase_fits[phases_sorted[0]]
+            fit2 = phase_fits[phases_sorted[1]]
+            E1_fit = fit1['slope'] * T1_last + fit1['intercept']
+            E2_fit = fit2['slope'] * T2_first + fit2['intercept']
+            Cv_transition_fit = (E2_fit - E1_fit) / (T2_first - T1_last) * 1000  # meV/K
+            
+            print(f"  热容峰计算方法: {peak_method}")
+            print(f"    全点法(data): Cv={Cv_transition_data:.2f} meV/K (所有点平均)")
+            print(f"    分区法(partition): Cv={Cv_transition_partition:.2f} meV/K (只用分区内点)")
+            print(f"    拟合法(fit): Cv={Cv_transition_fit:.2f} meV/K (拟合线外推)")
+            print(f"    Cv1={Cv1:.2f}, Cv2={Cv2:.2f} meV/K")
+            
+            # 根据选择的方法判断热容峰
+            if peak_method == 'data':
+                Cv_transition = Cv_transition_data
+                method_name = "全点数据法"
+            elif peak_method == 'partition':
+                Cv_transition = Cv_transition_partition
+                method_name = "分区点法"
+            else:  # 'fit'
+                Cv_transition = Cv_transition_fit
+                method_name = "拟合线外推法"
             
             # 判断是否存在热容峰
             has_peak = Cv_transition > max(Cv1, Cv2)
             
             if has_peak:
                 Cv_peak = Cv_transition
-                print(f"  ★ 存在热容峰: Cv_peak={Cv_peak:.2f} meV/K (过渡区)")
+                print(f"  ★ 存在热容峰: Cv_peak={Cv_peak:.2f} meV/K ({method_name})")
                 print(f"  热容: Cv1={Cv1:.2f}, Cv_peak={Cv_peak:.2f}, Cv2={Cv2:.2f} meV/K")
                 
                 # 绘制带平滑峰的热容曲线（使用高斯峰 + sigmoid过渡）
@@ -509,13 +788,34 @@ def parse_args():
   %(prog)s --structure Pt8sn6              # 单个结构
   %(prog)s --structure Air86 --format pdf  # 输出PDF
   %(prog)s --structure all --dpi 600       # 所有结构，高分辨率
+  %(prog)s --only-series pt8snx            # 批量绘制 Pt8SnX 系列
+  %(prog)s --only-series pt6snx,pt8snx     # 批量绘制多个系列
   %(prog)s --list                          # 列出可用结构
   %(prog)s --structure Pt8sn6 --y-ticks 0,2,4 --cv-ticks 3,4,5,6,7  # 自定义刻度
+  
+自定义分区:
+  %(prog)s --structure o2pt7sn7 --partitions 200-700,750-950   # 手动指定分区
+  %(prog)s --structure Pt6sn8 --partitions 200-550,600-950     # 第一分区200-550K，第二分区600-950K
+
+热容峰计算方法:
+  %(prog)s --structure o2pt7sn7 --peak-method data      # 全点数据法（所有点平均）
+  %(prog)s --structure o2pt7sn7 --peak-method partition # 分区点法（只用归属分区的点）★推荐
+  %(prog)s --structure o2pt7sn7 --peak-method fit       # 拟合线外推法
+
+离群点剔除（增强版）:
+  %(prog)s --structure o2pt7sn7 --remove-outliers                    # 默认 IQR×1.5
+  %(prog)s --structure o2pt7sn7 --remove-outliers --outlier-iqr 1.0  # 更严格 IQR×1.0
+  %(prog)s --structure o2pt7sn7 --outlier-method zscore:2            # Z-score 2σ
+  %(prog)s --structure o2pt7sn7 --outlier-method zscore:1.5:3        # Z-score 1.5σ, 3次迭代
+  %(prog)s --structure o2pt7sn7 --outlier-method mad:2.5             # MAD方法（更鲁棒）
+  %(prog)s --structure o2pt7sn7 --outlier-method percentile:5        # 剔除最极端5%%的点
         '''
     )
     
     parser.add_argument('--structure', '-s', type=str, default=None,
                         help='结构名称 (如 Pt8sn6, Air86) 或 "all" 处理所有')
+    parser.add_argument('--only-series', type=str, default=None,
+                        help='只处理指定系列（逗号分隔）: pt8snx, pt6snx, air, oxide, sum8')
     parser.add_argument('--list', '-l', action='store_true',
                         help='列出所有可用结构')
     parser.add_argument('--format', '-f', type=str, default='png',
@@ -536,6 +836,23 @@ def parse_args():
                         help='能量Y轴刻度数量 (默认: 5)，如果指定了 --y-ticks 则忽略')
     parser.add_argument('--cv-nticks', type=int, default=5,
                         help='Cv轴刻度数量 (默认: 5)，如果指定了 --cv-ticks 则忽略')
+    parser.add_argument('--partitions', '-p', type=str, default=None,
+                        help='手动指定分区温度范围，格式: T1_min-T1_max,T2_min-T2_max，'
+                             '例如: 200-700,750-950 表示第一分区200-700K，第二分区750-950K')
+    parser.add_argument('--peak-method', type=str, default='fit',
+                        choices=['data', 'partition', 'fit'],
+                        help='热容峰计算方法: data=全点数据法, partition=分区点法, fit=拟合线外推法 (默认: fit)')
+    parser.add_argument('--remove-outliers', action='store_true',
+                        help='启用离群点剔除（默认IQR法）')
+    parser.add_argument('--outlier-iqr', type=float, default=1.5,
+                        help='IQR倍数阈值 (默认: 1.5)，越小剔除越严格')
+    parser.add_argument('--outlier-method', type=str, default=None,
+                        help='离群点剔除方法，格式: method:threshold:iterations\n'
+                             '  iqr:1.5      - IQR法 (默认)\n'
+                             '  zscore:2     - Z-score法，2个标准差\n'
+                             '  zscore:1.5:3 - Z-score法，1.5σ，迭代3次\n'
+                             '  mad:2.5      - MAD法（对异常值更鲁棒）\n'
+                             '  percentile:5 - 百分位法，剔除最极端5%的点')
     
     return parser.parse_args()
 
@@ -575,13 +892,27 @@ def main():
         except ValueError:
             print(f"警告: 无效的 --cv-ticks 格式 '{args.cv_ticks}'，将自动计算")
     
+    # 解析自定义分区
+    custom_partitions = None
+    if args.partitions:
+        try:
+            custom_partitions = []
+            for part in args.partitions.split(','):
+                T_min, T_max = map(float, part.strip().split('-'))
+                custom_partitions.append((T_min, T_max))
+            print(f"  自定义分区: {custom_partitions}")
+        except ValueError:
+            print(f"警告: 无效的 --partitions 格式 '{args.partitions}'，将使用聚类结果")
+            print(f"  正确格式: T1_min-T1_max,T2_min-T2_max，例如 200-700,750-950")
+            custom_partitions = None
+    
     # 列出可用结构
     if args.list:
         list_available_structures()
         return
     
-    if args.structure is None:
-        print("错误: 请指定 --structure 或使用 --list 查看可用结构")
+    if args.structure is None and args.only_series is None:
+        print("错误: 请指定 --structure 或 --only-series，或使用 --list 查看可用结构")
         return
     
     # 创建输出目录
@@ -591,7 +922,18 @@ def main():
     # 获取可用结构
     available = find_clustering_results()
     
-    if args.structure.lower() == 'all':
+    # 根据参数确定要处理的结构列表
+    if args.only_series:
+        # 按系列筛选
+        series_list = [s.strip().lower() for s in args.only_series.split(',')]
+        structures = filter_structures_by_series(available, series_list)
+        if not structures:
+            print(f"\n错误: 系列 {series_list} 中没有找到任何结构")
+            return
+        print(f"\n处理系列 {series_list}: 共 {len(structures)} 个结构")
+        for s in sorted(structures):
+            print(f"  - {s}")
+    elif args.structure.lower() == 'all':
         structures = list(available.keys())
         print(f"\n处理所有 {len(structures)} 个结构...")
     else:
@@ -631,8 +973,17 @@ def main():
             'figsize': figsize,
         }
         
+        # 确定离群点剔除参数
+        if args.outlier_method:
+            remove_outliers_param = args.outlier_method
+        elif args.remove_outliers:
+            remove_outliers_param = True
+        else:
+            remove_outliers_param = False
+        
         result = plot_partition_cv(df, found_name, output_dir, 
-                                   args.format, args.dpi, tick_params)
+                                   args.format, args.dpi, tick_params, custom_partitions,
+                                   args.peak_method, remove_outliers_param, args.outlier_iqr)
         
         if result:
             results.append(result)

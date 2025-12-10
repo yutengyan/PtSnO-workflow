@@ -373,7 +373,7 @@ BASE_DIR = Path(__file__).parent
 # 输入数据文件配置
 # ============================================================================
 
-# 主数据集 (负载型纳米团簇)
+# 默认数据集 (负载型纳米团簇)
 CLUSTER_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'energy_master_20251016_121110.csv'
 LINDEMANN_FILE = BASE_DIR / 'data' / 'lindemann' / 'lin-for-all-but-every-ele' / 'lindemann_master_run_20251113_195434.csv'
 # ★ 新增: 使用comparison文件支持PtSnO列（含氧体系的林德曼指数包含O原子）
@@ -383,6 +383,10 @@ LINDEMANN_COMPARISON_FILE = BASE_DIR / 'data' / 'lindemann' / 'lin-for-all-but-e
 AIR_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'lammps_energy_analysis-air' / 'energy_master_20251124_152416.csv'
 AIR_LINDEMANN_FILE = BASE_DIR / 'data' / 'lindemann' / 'collected_lindemann_cluster-lin20251124-air' / 'lindemann_master_run_20251124_164914.csv'
 
+# 50K 数据集 (50K温度间隔) - 使用energy_master而非energy_average,每个run一行
+DATA_50K_ENERGY_FILE = BASE_DIR / 'data' / 'for-more-50K' / 'lammps_energy_analysis-50K' / 'energy_master_20251208_193435.csv'
+DATA_50K_LINDEMANN_FILE = BASE_DIR / 'data' / 'for-more-50K' / 'collected_lindemann_cluster' / 'lindemann_master_run_20251208_172149.csv'
+
 # 载体数据
 SUPPORT_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'sup' / 'energy_master_20251021_151520.csv'
 
@@ -391,6 +395,22 @@ RESULTS_DIR = BASE_DIR / 'results' / 'step6_0_multi_system'
 
 # Step 1 filtering results
 OUTLIERS_FILE = BASE_DIR / 'results' / 'large_D_outliers.csv'
+
+# 数据源配置字典
+DATA_SOURCES = {
+    'default': {
+        'energy': CLUSTER_ENERGY_FILE,
+        'lindemann': LINDEMANN_FILE,
+        'description': '默认数据集 (100K温度间隔, ~3262条记录)',
+        'include_air': True,
+    },
+    '50K': {
+        'energy': DATA_50K_ENERGY_FILE,
+        'lindemann': DATA_50K_LINDEMANN_FILE,
+        'description': '50K温度间隔数据集 (O2Pt7Sn7-50, pt6sn8, pt8sn6等)',
+        'include_air': False,
+    }
+}
 
 
 def detect_system_type(structure_name):
@@ -408,8 +428,26 @@ def detect_system_type(structure_name):
         'Pt5Sn3O1' -> ('PtxSnyOz', 'Pt5Sn3O1')
         '68' -> ('Air', 'Air68')  # 气相纳米团簇
         '86' -> ('Air', 'Air86')  # 气相纳米团簇
+        '200K-3' -> ('Pt8SnX', 'Pt8Sn6')  # 50K数据别名
+        'O2Pt7Sn7-50' -> ('PtxSnyOz', 'O2Pt7Sn7')  # 50K数据
     """
     name = str(structure_name).strip()
+    
+    # ============================================================================
+    # 50K 数据结构名映射 (特殊别名)
+    # ============================================================================
+    STRUCTURE_ALIASES = {
+        '200K-3': ('Pt8SnX', 'Pt8Sn6'),
+        'O2Pt7Sn7-50': ('PtxSnyOz', 'O2Pt7Sn7'),
+        'O2Pt7Sn7-50-2': ('PtxSnyOz', 'O2Pt7Sn7'),
+        'pt6sn8-1': ('Pt6SnX', 'Pt6Sn8'),
+        'pt8sn6-1-best': ('Pt8SnX', 'Pt8Sn6'),
+        'pt8sn6-1-best-2': ('Pt8SnX', 'Pt8Sn6'),
+    }
+    
+    # 检查是否是已知别名
+    if name in STRUCTURE_ALIASES:
+        return STRUCTURE_ALIASES[name]
     
     # Air series (气相纳米团簇: 68, 86)
     if name in ['68', '86']:
@@ -422,15 +460,15 @@ def detect_system_type(structure_name):
     
     # Pt8SnX series (pt8sn0-2-best, pt8sn1-2-best, etc.)
     if re.match(r'^pt8sn\d+', name, re.IGNORECASE):
-        match = re.match(r'^(pt8sn\d+)', name, re.IGNORECASE)
-        base_name = match.group(1)
-        return ('Pt8SnX', base_name.capitalize())
+        match = re.match(r'^pt8sn(\d+)', name, re.IGNORECASE)
+        sn_num = match.group(1)
+        return ('Pt8SnX', f'Pt8Sn{sn_num}')  # 规范化为 Pt8SnX 格式
     
     # Pt6SnX series (pt6sn1, pt6sn2, etc.)
     if re.match(r'^pt6sn\d+', name, re.IGNORECASE):
-        match = re.match(r'^(pt6sn\d+)', name, re.IGNORECASE)
-        base_name = match.group(1)
-        return ('Pt6SnX', base_name.capitalize())
+        match = re.match(r'^pt6sn(\d+)', name, re.IGNORECASE)
+        sn_num = match.group(1)
+        return ('Pt6SnX', f'Pt6Sn{sn_num}')  # 规范化为 Pt6SnX 格式
     
     # Pt6 alone
     if re.match(r'^pt6$', name, re.IGNORECASE):
@@ -739,7 +777,7 @@ def normalize_path(path, system_type='Cv', structure_name=''):
     return extract_path_signature(path, is_msd_path=is_msd_path)
 
 
-def load_energy_data(energy_file, system_filter=None, file_type='cluster'):
+def load_energy_data(energy_file, system_filter=None, file_type='cluster', is_50k_data=False):
     """
     Load energy data at individual run level
     
@@ -748,14 +786,22 @@ def load_energy_data(energy_file, system_filter=None, file_type='cluster'):
         system_filter: list of system types to filter (e.g., ['Cv', 'Pt8SnX'])
                       None means load all systems
         file_type: 'cluster', 'support', or 'air'
+        is_50k_data: 是否为50K数据 (使用简化的路径匹配)
     """
     print(f"\n>>> Loading {file_type} energy data: {energy_file.name}")
     df = pd.read_csv(energy_file, encoding='utf-8')
     
-    # Handle different column formats - Air文件有15列，包括e_squared和delta_e_squared
-    if '结构' in df.columns:
-        # 检查列数以确定格式
-        if len(df.columns) == 15:
+    # Handle different column formats
+    n_cols = len(df.columns)
+    
+    if '结构' in df.columns or '温度(K)' in df.columns:
+        # 中文列名格式
+        if n_cols == 9:
+            # 50K 数据格式: 9列 (energy_average 格式)
+            df.columns = ['path', 'structure', 'temp', 'run_num', 'avg_energy', 
+                          'std', 'total_std', 'min', 'max']
+            print(f"    Detected 50K energy_average format (9 columns)")
+        elif n_cols == 15:
             # 完整的15列格式 (包含 e_squared 和 delta_e_squared)
             df.columns = ['path', 'structure', 'temp', 'run_num', 'total_steps', 'sample_steps', 
                           'avg_energy', 'std', 'min', 'max', 'e_squared', 'delta_e_squared',
@@ -767,15 +813,23 @@ def load_energy_data(energy_file, system_filter=None, file_type='cluster'):
                           'skip_steps', 'full_path']
     else:
         # Already in English - 根据列数处理
-        if len(df.columns) == 15:
+        if n_cols == 9:
+            df.columns = ['path', 'structure', 'temp', 'run_num', 'avg_energy', 
+                          'std', 'total_std', 'min', 'max']
+        elif n_cols == 15:
             expected_cols = ['path', 'structure', 'temp', 'run_num', 'total_steps', 'sample_steps', 
                             'avg_energy', 'std', 'min', 'max', 'e_squared', 'delta_e_squared',
                             'sample_interval', 'skip_steps', 'full_path']
+            df.columns = expected_cols
         else:
             expected_cols = ['path', 'structure', 'temp', 'run_num', 'total_steps', 'sample_steps', 
                             'avg_energy', 'std', 'min', 'max', 'sample_interval', 
                             'skip_steps', 'full_path']
-        df.columns = expected_cols[:len(df.columns)]
+            df.columns = expected_cols[:n_cols]
+    
+    # 确保有 full_path 列 (用于后续 key 生成)
+    if 'full_path' not in df.columns:
+        df['full_path'] = df['path']
     
     # 确保structure列是字符串类型
     df['structure'] = df['structure'].astype(str)
@@ -804,6 +858,24 @@ def load_energy_data(energy_file, system_filter=None, file_type='cluster'):
                 run_info = f'r{run_num}'
             return f"{struct}_{temp}_{run_info}"
         df['match_key'] = df.apply(make_air_key, axis=1)
+    elif is_50k_data:
+        # 50K 数据: 使用路径最后两层 (结构/温度.run) 作为 key
+        def make_50k_key(row):
+            full_path = row.get('full_path', '')
+            if full_path:
+                parts = full_path.rstrip('/').split('/')
+                # 取最后两层: 结构名/T温度.r序号.gpu序号
+                if len(parts) >= 2:
+                    return f"{parts[-2]}/{parts[-1]}".lower()
+            return None
+        df['match_key'] = df.apply(make_50k_key, axis=1)
+        print(f"    Using 50K path-based match key: structure/T.run")
+    elif n_cols == 9:
+        # 旧的50K energy_average 格式 (已弃用)
+        df['match_key'] = df.apply(
+            lambda row: f"{row['system_id']}_{int(row['temp'])}", axis=1
+        )
+        print(f"    Using 50K simplified match key: system_id_temp")
     else:
         df['match_key'] = df.apply(
             lambda row: normalize_path(row['full_path'], row['system_type'], row['structure']), axis=1
@@ -921,13 +993,14 @@ def load_lindemann_individual_runs(system_filter=None):
     return df
 
 
-def load_lindemann_data_from_file(lindemann_file, system_filter=None):
+def load_lindemann_data_from_file(lindemann_file, system_filter=None, is_50k_data=False):
     """
     从指定文件加载林德曼数据 (用于Air等额外数据集)
     
     Args:
         lindemann_file: 林德曼数据文件路径
         system_filter: 系统类型过滤器
+        is_50k_data: 是否是50K数据格式 (使用简化的 match_key)
     
     Returns:
         DataFrame: 包含林德曼数据的DataFrame
@@ -966,12 +1039,25 @@ def load_lindemann_data_from_file(lindemann_file, system_filter=None):
         df = df[df['system_type'].isin(system_filter)].copy()
         print(f"    Filter applied: {system_filter}")
     
-    # Create matching key (对于Air数据，使用简化的key: structure_temp_run)
-    # Air数据的directory格式不同，需要特殊处理
-    df['match_key'] = df.apply(
-        lambda row: f"{row['structure']}_{row['temp']}_{row.get('directory', '').split('/')[-1] if row.get('directory') else 'unknown'}", 
-        axis=1
-    )
+    # Create matching key
+    if is_50k_data:
+        # 50K 数据: 使用路径最后两层 (结构/温度.run) 作为 key
+        def make_50k_lindemann_key(row):
+            directory = row.get('directory', '')
+            if directory:
+                parts = directory.rstrip('/').split('/')
+                # 取最后两层: 结构名/T温度.r序号.gpu序号
+                if len(parts) >= 2:
+                    return f"{parts[-2]}/{parts[-1]}".lower()
+            return None
+        df['match_key'] = df.apply(make_50k_lindemann_key, axis=1)
+        print(f"    Using 50K path-based match key: structure/T.run")
+    else:
+        # Air数据的directory格式不同，需要特殊处理
+        df['match_key'] = df.apply(
+            lambda row: f"{row['structure']}_{row['temp']}_{row.get('directory', '').split('/')[-1] if row.get('directory') else 'unknown'}", 
+            axis=1
+        )
     
     # Print system distribution
     system_counts = df['system_type'].value_counts()
@@ -2191,20 +2277,26 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Default: No filtering (use all data)
-  python step7_4_multi_system_heat_capacity.py
+  # Default: No filtering (use all data from default source)
+  python step6_0_multi_system_heat_capacity.py
+
+  # Use 50K temperature interval data
+  python step6_0_multi_system_heat_capacity.py --data-source 50K
 
   # Apply Step 1 MSD outlier filtering only
-  python step7_4_multi_system_heat_capacity.py --msd-filter
+  python step6_0_multi_system_heat_capacity.py --msd-filter
 
   # Apply IQR filtering only (Lindemann + Energy)
-  python step7_4_multi_system_heat_capacity.py --iqr-filter
+  python step6_0_multi_system_heat_capacity.py --iqr-filter
 
   # Apply both filtering methods
-  python step7_4_multi_system_heat_capacity.py --msd-filter --iqr-filter
+  python step6_0_multi_system_heat_capacity.py --msd-filter --iqr-filter
 
   # Adjust IQR threshold (default 3.0)
-  python step7_4_multi_system_heat_capacity.py --iqr-filter --iqr-factor 2.5
+  python step6_0_multi_system_heat_capacity.py --iqr-filter --iqr-factor 2.5
+  
+  # 50K data with filtering
+  python step6_0_multi_system_heat_capacity.py --data-source 50K --iqr-filter
         """
     )
     
@@ -2234,12 +2326,35 @@ Examples:
         help='Structure name for clustering analysis (e.g., Pt6Sn8). Uses K-means to auto-detect phase boundaries.'
     )
     
+    parser.add_argument(
+        '--data-source',
+        type=str,
+        default='default',
+        choices=['default', '50K'],
+        help='Data source to use: "default" (100K interval) or "50K" (50K interval data)'
+    )
+    
     args = parser.parse_args()
     
+    # 获取数据源配置
+    data_source = DATA_SOURCES[args.data_source]
+    energy_file = data_source['energy']
+    lindemann_file = data_source['lindemann']
+    include_air = data_source['include_air']
+    
     print(f"\n{'='*80}")
-    print("Step 7.4: Multi-Structure Individual Run Heat Capacity Analysis")
+    print("Step 6.0: Multi-Structure Individual Run Heat Capacity Analysis")
     print("="*80)
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    
+    # Display data source
+    print(f"[Data Source Configuration]")
+    print(f"  Data source: {args.data_source}")
+    print(f"  Description: {data_source['description']}")
+    print(f"  Energy file: {energy_file}")
+    print(f"  Lindemann file: {lindemann_file}")
+    print(f"  Include Air data: {include_air}")
+    print()
     
     # Display filtering configuration
     print(f"[Filtering Configuration]")
@@ -2274,12 +2389,22 @@ Examples:
     print(f"Analysis level: Individual structures (system_id)")
     print(f"Note: Each structure (e.g., Cv-1, Pt8Sn3) analyzed separately\n")
     
-    # 1. Load main data (负载型纳米团簇)
-    df_energy = load_energy_data(CLUSTER_ENERGY_FILE, system_filter, 'cluster')
-    df_lindemann = load_lindemann_individual_runs(system_filter)
+    # 根据数据源设置 is_50k_data 标志
+    is_50k = (args.data_source == '50K')
     
-    # 1.1 Load Air data (气相纳米团簇: 68, 86)
-    if AIR_ENERGY_FILE.exists() and AIR_LINDEMANN_FILE.exists():
+    # 1. Load main data (根据数据源选择)
+    df_energy = load_energy_data(energy_file, system_filter, 'cluster', is_50k_data=is_50k)
+    
+    # 根据数据源选择 Lindemann 加载方式
+    if is_50k:
+        # 50K 数据使用直接文件加载，并使用路径匹配
+        df_lindemann = load_lindemann_data_from_file(lindemann_file, is_50k_data=True)
+    else:
+        # 默认数据使用原有的加载方式
+        df_lindemann = load_lindemann_individual_runs(system_filter)
+    
+    # 1.1 Load Air data (气相纳米团簇: 68, 86) - 仅在默认数据源时加载
+    if include_air and AIR_ENERGY_FILE.exists() and AIR_LINDEMANN_FILE.exists():
         print("\n>>> Loading Air data (气相纳米团簇: 68, 86)")
         df_energy_air = load_energy_data(AIR_ENERGY_FILE, None, 'air')
         df_lindemann_air = load_lindemann_data_from_file(AIR_LINDEMANN_FILE)
