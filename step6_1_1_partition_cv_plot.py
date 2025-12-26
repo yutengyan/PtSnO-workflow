@@ -61,17 +61,57 @@ PHASE_COLORS = {
 CV_SUPPORT = 38.2151
 
 
-def find_clustering_results(base_dir='results/step6_1_clustering'):
-    """查找所有可用的聚类结果"""
-    results = {}
-    # 使用实际的文件命名模式
-    pattern = os.path.join(base_dir, '*_kmeans_n2_clustered_data.csv')
-    files = glob.glob(pattern)
+def find_clustering_results(base_dir='results/step6_1_clustering', method='auto'):
+    """
+    查找所有可用的聚类结果
     
-    for f in files:
-        basename = os.path.basename(f)
-        structure = basename.replace('_kmeans_n2_clustered_data.csv', '')
-        results[structure] = f
+    Parameters:
+    -----------
+    base_dir : str
+        聚类结果目录
+    method : str
+        聚类方法优先级: 'auto', 'lindemann-threshold', 'kmeans'
+        - 'auto': 优先使用lindemann-threshold,如果不存在则使用kmeans
+        - 'lindemann-threshold': 只查找lindemann阈值方法
+        - 'kmeans': 只查找kmeans方法
+    
+    Returns:
+    --------
+    dict : {structure_name: file_path}
+    """
+    results = {}
+    
+    # 定义搜索模式优先级
+    if method == 'auto':
+        patterns = [
+            '*_lindemann-threshold_n2_clustered_data.csv',
+            '*_kmeans_n2_clustered_data.csv'
+        ]
+        suffixes = [
+            '_lindemann-threshold_n2_clustered_data.csv',
+            '_kmeans_n2_clustered_data.csv'
+        ]
+    elif method == 'lindemann-threshold':
+        patterns = ['*_lindemann-threshold_n2_clustered_data.csv']
+        suffixes = ['_lindemann-threshold_n2_clustered_data.csv']
+    elif method == 'kmeans':
+        patterns = ['*_kmeans_n2_clustered_data.csv']
+        suffixes = ['_kmeans_n2_clustered_data.csv']
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    
+    # 查找文件
+    found_structures = set()
+    for pattern, suffix in zip(patterns, suffixes):
+        files = glob.glob(os.path.join(base_dir, pattern))
+        for f in files:
+            basename = os.path.basename(f)
+            structure = basename.replace(suffix, '')
+            
+            # 优先级:只添加尚未找到的结构
+            if structure not in found_structures:
+                results[structure] = f
+                found_structures.add(structure)
     
     return results
 
@@ -119,6 +159,96 @@ def classify_structure(name):
     return result
 
 
+def parse_exclude_points(exclude_args):
+    """
+    解析要排除的点
+    
+    参数:
+        exclude_args: list of str, 例如 ["300K:1,2", "400K:0"]
+    
+    返回:
+        dict: {temp: [indices]} 例如 {300: [1, 2], 400: [0]}
+    """
+    exclude_dict = {}
+    if not exclude_args:
+        return exclude_dict
+    
+    for arg in exclude_args:
+        try:
+            temp_str, indices_str = arg.split(':')
+            temp = int(temp_str.replace('K', ''))
+            indices = [int(i) for i in indices_str.split(',')]
+            exclude_dict[temp] = indices
+        except Exception as e:
+            print(f"  ⚠️ 警告: 无法解析排除点 '{arg}': {e}")
+    
+    return exclude_dict
+
+
+def filter_data_by_exclusion(df, exclude_dict, sort_by='delta'):
+    """
+    根据排除规则过滤数据
+    
+    参数:
+        df: DataFrame 包含 'temp', 'delta', 'avg_energy' 列
+        exclude_dict: dict {temp: [indices]}
+        sort_by: 排序依据 ('delta' 或 'energy')
+    
+    返回:
+        DataFrame: 过滤后的数据
+    """
+    if not exclude_dict:
+        return df
+    
+    print(f"\n  [排除点过滤] 排序依据: {sort_by}")
+    
+    # 创建掩码
+    mask = np.ones(len(df), dtype=bool)
+    
+    for temp, indices in exclude_dict.items():
+        # 获取该温度的所有数据
+        temp_mask = df['temp'] == temp
+        temp_indices = np.where(temp_mask)[0]
+        
+        if len(temp_indices) == 0:
+            print(f"    警告: 温度 {temp}K 没有数据点")
+            continue
+        
+        # 按指定字段排序
+        temp_df = df[temp_mask].copy()
+        temp_df['original_idx'] = temp_indices
+        
+        if sort_by == 'delta':
+            # 按 Lindemann 指数排序（从大到小）
+            temp_df_sorted = temp_df.sort_values('delta', ascending=False)
+            sort_label = 'Lindemann'
+        else:  # sort_by == 'energy'
+            # 按能量排序（从大到小）
+            temp_df_sorted = temp_df.sort_values('avg_energy', ascending=False)
+            sort_label = 'Energy'
+        
+        # 标记要排除的点
+        for idx in indices:
+            if idx < len(temp_df_sorted):
+                original_idx = int(temp_df_sorted.iloc[idx]['original_idx'])
+                mask[original_idx] = False
+                
+                if sort_by == 'delta':
+                    value = temp_df_sorted.iloc[idx]['delta']
+                    print(f"    排除: {temp}K 第{idx}个点 (delta={value:.4f})")
+                else:
+                    value = temp_df_sorted.iloc[idx]['avg_energy']
+                    print(f"    排除: {temp}K 第{idx}个点 (energy={value:.4f} eV)")
+            else:
+                print(f"    警告: {temp}K 索引{idx}超出范围 (最大={len(temp_df_sorted)-1})")
+    
+    filtered_df = df[mask].copy()
+    n_excluded = len(df) - len(filtered_df)
+    print(f"  过滤结果: 原始{len(df)}条 → 保留{len(filtered_df)}条 (排除{n_excluded}条)\n")
+    
+    return filtered_df
+
+
 def filter_structures_by_series(available, series_list):
     """
     根据系列筛选结构
@@ -159,14 +289,109 @@ def load_support_energy_data():
     return None
 
 
-def load_cluster_data(csv_path):
-    """加载聚类结果数据"""
+def load_cluster_data(csv_path, exclude_dict=None, exclude_sort_by='delta'):
+    """
+    加载聚类结果数据并过滤
+    
+    参数:
+        csv_path: CSV文件路径
+        exclude_dict: 排除点字典 {temp: [indices]}
+        exclude_sort_by: 排序依据 ('delta' 或 'energy')
+    """
     try:
         df = pd.read_csv(csv_path)
+        
+        if exclude_dict:
+            print(f"\n  加载数据: {csv_path}")
+            print(f"  原始数据: {len(df)} 条")
+            df = filter_data_by_exclusion(df, exclude_dict, sort_by=exclude_sort_by)
+        
         return df
     except Exception as e:
         print(f"  错误: 无法读取 {csv_path}: {e}")
         return None
+
+
+def determine_partitions_by_lindemann(df, threshold=0.1):
+    """
+    根据固定Lindemann阈值自动确定分区温度范围
+    
+    参数:
+        df: DataFrame，必须包含 'temp' 和 'delta' 列
+        threshold: Lindemann阈值（默认0.1）
+        
+    返回:
+        tuple: (custom_partitions, temp_to_partition_dict)
+            - custom_partitions: [(T_min1, T_max1), (T_min2, T_max2)]
+            - temp_to_partition_dict: {temp: partition_id}
+    
+    逻辑:
+        1. 对每个温度计算平均Lindemann指数
+        2. δ_avg < threshold → 分区1 (固相)
+        3. δ_avg >= threshold → 分区2 (液相)
+        4. 找到分区边界温度
+    """
+    print(f"\n  [Lindemann阈值分区] 阈值 δ = {threshold:.3f}")
+    
+    # 按温度分组计算平均Lindemann指数
+    temp_delta = df.groupby('temp')['delta'].agg(['mean', 'std', 'count']).reset_index()
+    temp_delta = temp_delta.sort_values('temp')
+    
+    # 根据阈值分类每个温度
+    temp_delta['partition'] = temp_delta['mean'].apply(
+        lambda x: 1 if x < threshold else 2
+    )
+    
+    print(f"\n  温度分区结果:")
+    print(f"  {'温度(K)':<10} {'δ平均':<10} {'δ标准差':<10} {'点数':<6} {'分区':<6}")
+    print(f"  {'-'*50}")
+    for _, row in temp_delta.iterrows():
+        print(f"  {row['temp']:<10.0f} {row['mean']:<10.4f} {row['std']:<10.4f} "
+              f"{row['count']:<6.0f} {row['partition']:<6.0f}")
+    
+    # 创建温度到分区的映射
+    temp_to_partition = dict(zip(temp_delta['temp'], temp_delta['partition']))
+    
+    # 确定分区温度范围
+    partition1_temps = temp_delta[temp_delta['partition'] == 1]['temp'].values
+    partition2_temps = temp_delta[temp_delta['partition'] == 2]['temp'].values
+    
+    custom_partitions = []
+    
+    if len(partition1_temps) > 0:
+        T1_min = partition1_temps.min()
+        T1_max = partition1_temps.max()
+        custom_partitions.append((T1_min, T1_max))
+        print(f"\n  分区1 (固相, δ<{threshold}): {T1_min:.0f}-{T1_max:.0f} K ({len(partition1_temps)} 个温度)")
+    else:
+        print(f"\n  警告: 没有温度点被分到分区1 (固相)")
+    
+    if len(partition2_temps) > 0:
+        T2_min = partition2_temps.min()
+        T2_max = partition2_temps.max()
+        custom_partitions.append((T2_min, T2_max))
+        print(f"  分区2 (液相, δ≥{threshold}): {T2_min:.0f}-{T2_max:.0f} K ({len(partition2_temps)} 个温度)")
+    else:
+        print(f"  警告: 没有温度点被分到分区2 (液相)")
+    
+    if len(custom_partitions) < 2:
+        print(f"\n  警告: Lindemann阈值 {threshold} 未能产生两个分区，可能需要调整阈值")
+        return None, None
+    
+    # 检查分区连续性
+    if len(partition1_temps) > 0 and len(partition2_temps) > 0:
+        T1_last = partition1_temps.max()
+        T2_first = partition2_temps.min()
+        if T2_first > T1_last:
+            gap = T2_first - T1_last
+            print(f"\n  分区边界: {T1_last:.0f} K (固相最高) → {T2_first:.0f} K (液相最低)")
+            if gap > 0:
+                print(f"  过渡区间: {gap:.0f} K")
+        else:
+            print(f"\n  警告: 分区温度交叉! 固相最高温 {T1_last:.0f} K ≥ 液相最低温 {T2_first:.0f} K")
+            print(f"        建议调整阈值或检查数据")
+    
+    return custom_partitions, temp_to_partition
 
 
 def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None, custom_partitions=None, peak_method='fit', remove_outliers=False, outlier_iqr=1.5):
@@ -418,7 +643,7 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     Cv_overall = slope_overall * 1000  # meV/K
     Cv_overall_err = std_err_overall * 1000
     
-    print(f"\n  整体拟合: Cv={Cv_overall:.4f}±{Cv_overall_err:.4f} meV/K, R²={R2_overall:.4f}")
+    print(f"\n  整体拟合: Cv={Cv_overall:.4f}±{Cv_overall_err:.4f} meV/K, R2={R2_overall:.4f}")
     
     # ========== 4. 分区拟合 ==========
     phases = df['phase_clustered'].unique()
@@ -737,9 +962,9 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     }
 
 
-def list_available_structures(base_dir='results/step6_1_clustering'):
+def list_available_structures(base_dir='results/step6_1_clustering', method='auto'):
     """列出所有可用的结构"""
-    results = find_clustering_results(base_dir)
+    results = find_clustering_results(base_dir, method=method)
     
     print("\n" + "=" * 60)
     print("可用结构列表")
@@ -797,6 +1022,12 @@ def parse_args():
   %(prog)s --structure o2pt7sn7 --partitions 200-700,750-950   # 手动指定分区
   %(prog)s --structure Pt6sn8 --partitions 200-550,600-950     # 第一分区200-550K，第二分区600-950K
 
+Lindemann阈值自动分区（新功能）:
+  %(prog)s --structure Pt8sn6 --use-lindemann-threshold 0.1    # δ<0.1固相，δ≥0.1液相
+  %(prog)s --structure Pt6sn8 --use-lindemann-threshold 0.08   # 使用δ=0.08作为阈值
+  %(prog)s --structure Air86 --use-lindemann-threshold 0.12    # 气相团簇，δ=0.12阈值
+  %(prog)s --structure all --use-lindemann-threshold 0.1       # 批量处理，统一阈值
+
 热容峰计算方法:
   %(prog)s --structure o2pt7sn7 --peak-method data      # 全点数据法（所有点平均）
   %(prog)s --structure o2pt7sn7 --peak-method partition # 分区点法（只用归属分区的点）★推荐
@@ -818,6 +1049,12 @@ def parse_args():
                         help='只处理指定系列（逗号分隔）: pt8snx, pt6snx, air, oxide, sum8')
     parser.add_argument('--list', '-l', action='store_true',
                         help='列出所有可用结构')
+    parser.add_argument('--clustering-method', type=str, default='auto',
+                        choices=['auto', 'lindemann-threshold', 'kmeans'],
+                        help='聚类数据文件选择方法: '
+                             'auto(默认,优先lindemann-threshold), '
+                             'lindemann-threshold(仅Lindemann阈值数据), '
+                             'kmeans(仅KMeans聚类数据)')
     parser.add_argument('--format', '-f', type=str, default='png',
                         choices=['png', 'pdf', 'svg', 'eps'],
                         help='输出格式 (默认: png)')
@@ -852,7 +1089,19 @@ def parse_args():
                              '  zscore:2     - Z-score法，2个标准差\n'
                              '  zscore:1.5:3 - Z-score法，1.5σ，迭代3次\n'
                              '  mad:2.5      - MAD法（对异常值更鲁棒）\n'
-                             '  percentile:5 - 百分位法，剔除最极端5%的点')
+                             '  percentile:5 - 百分位法，剔除最极端5%%的点')
+    parser.add_argument('--exclude', nargs='+', metavar='TEMP:INDICES',
+                        help='手动排除特定温度的数据点，格式: "300K:0,1" "600K:0"\n'
+                             '索引按Lindemann指数从大到小排序（默认），0表示最大值\n'
+                             '也可使用 --exclude-sort-by energy 改为按能量排序')
+    parser.add_argument('--exclude-sort-by', type=str, default='delta',
+                        choices=['delta', 'energy'],
+                        help='排除点的排序依据: delta=Lindemann指数(默认), energy=能量')
+    parser.add_argument('--use-lindemann-threshold', type=float, default=None,
+                        metavar='THRESHOLD',
+                        help='使用固定Lindemann阈值自动分区（替代手动--partitions）\n'
+                             '例如: --use-lindemann-threshold 0.1 表示 δ<0.1为固相，δ≥0.1为液相\n'
+                             '注意: 此参数会覆盖 --partitions，基于Lindemann指数自动确定分区边界')
     
     return parser.parse_args()
 
@@ -906,9 +1155,16 @@ def main():
             print(f"  正确格式: T1_min-T1_max,T2_min-T2_max，例如 200-700,750-950")
             custom_partitions = None
     
+    # 解析排除点参数
+    exclude_dict = parse_exclude_points(args.exclude)
+    if exclude_dict:
+        print(f"\n  手动排除点配置:")
+        print(f"    排序依据: {args.exclude_sort_by}")
+        print(f"    排除规则: {exclude_dict}")
+    
     # 列出可用结构
     if args.list:
-        list_available_structures()
+        list_available_structures(method=args.clustering_method)
         return
     
     if args.structure is None and args.only_series is None:
@@ -920,7 +1176,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # 获取可用结构
-    available = find_clustering_results()
+    available = find_clustering_results(method=args.clustering_method)
     
     # 根据参数确定要处理的结构列表
     if args.only_series:
@@ -958,11 +1214,44 @@ def main():
             continue
         
         csv_path = available[found_name]
-        df = load_cluster_data(csv_path)
+        df = load_cluster_data(csv_path, exclude_dict=exclude_dict, exclude_sort_by=args.exclude_sort_by)
         
         if df is None:
             failed += 1
             continue
+        
+        # 如果使用Lindemann阈值自动分区
+        lindemann_partitions = None
+        if args.use_lindemann_threshold is not None:
+            if 'delta' not in df.columns:
+                print(f"\n  警告: 数据中没有'delta'列，无法使用Lindemann阈值分区")
+                print(f"        将使用聚类结果或手动分区")
+            else:
+                lindemann_partitions, _ = determine_partitions_by_lindemann(
+                    df, threshold=args.use_lindemann_threshold
+                )
+                if lindemann_partitions:
+                    print(f"\n  使用Lindemann阈值自动分区: {lindemann_partitions}")
+                    # 覆盖手动分区
+                    custom_partitions = lindemann_partitions
+                    
+                    # 🔥 关键修复: 根据Lindemann阈值重新分类phase_clustered
+                    print(f"\n  [重新分类] 根据δ阈值={args.use_lindemann_threshold}重新分配数据点...")
+                    df['phase_clustered'] = df['delta'].apply(
+                        lambda x: 'partition1' if x < args.use_lindemann_threshold else 'partition2'
+                    )
+                    
+                    # 统计重新分类结果
+                    reclassify_stats = df.groupby(['temp', 'phase_clustered']).size().unstack(fill_value=0)
+                    print(f"\n  重新分类后的分区分布:")
+                    print(f"  {'温度(K)':<10} {'P1(固相)':<12} {'P2(液相)':<12}")
+                    print(f"  {'-'*35}")
+                    for temp in sorted(df['temp'].unique()):
+                        p1_count = reclassify_stats.loc[temp, 'partition1'] if 'partition1' in reclassify_stats.columns else 0
+                        p2_count = reclassify_stats.loc[temp, 'partition2'] if 'partition2' in reclassify_stats.columns else 0
+                        print(f"  {temp:<10.0f} {p1_count:<12.0f} {p2_count:<12.0f}")
+                else:
+                    print(f"\n  Lindemann阈值分区失败，将使用聚类结果或手动分区")
         
         # 构建刻度参数
         tick_params = {

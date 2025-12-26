@@ -384,8 +384,10 @@ AIR_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'lammps_energy_analysis-
 AIR_LINDEMANN_FILE = BASE_DIR / 'data' / 'lindemann' / 'collected_lindemann_cluster-lin20251124-air' / 'lindemann_master_run_20251124_164914.csv'
 
 # 50K 数据集 (50K温度间隔) - 使用energy_master而非energy_average,每个run一行
-DATA_50K_ENERGY_FILE = BASE_DIR / 'data' / 'for-more-50K' / 'lammps_energy_analysis-50K' / 'energy_master_20251208_193435.csv'
-DATA_50K_LINDEMANN_FILE = BASE_DIR / 'data' / 'for-more-50K' / 'collected_lindemann_cluster' / 'lindemann_master_run_20251208_172149.csv'
+# DATA_50K_ENERGY_FILE = BASE_DIR / 'data' / 'for-more-50K' / 'lammps_energy_analysis-50K' / 'energy_master_20251208_193435.csv'
+# DATA_50K_LINDEMANN_FILE = BASE_DIR / 'data' / 'for-more-50K' / 'collected_lindemann_cluster' / 'lindemann_master_run_20251208_172149.csv'
+DATA_50K_ENERGY_FILE = BASE_DIR / 'data' / 'for-more-50K' / 'lammps_energy_analysis-50K' / 'energy_master_20251225_120225.csv'
+DATA_50K_LINDEMANN_FILE = BASE_DIR / 'data' / 'for-more-50K' / 'collected_lindemann_cluster' / 'lindemann_master_run_20251225_103931.csv'
 
 # 载体数据
 SUPPORT_ENERGY_FILE = BASE_DIR / 'data' / 'lammps_energy' / 'sup' / 'energy_master_20251021_151520.csv'
@@ -859,17 +861,21 @@ def load_energy_data(energy_file, system_filter=None, file_type='cluster', is_50
             return f"{struct}_{temp}_{run_info}"
         df['match_key'] = df.apply(make_air_key, axis=1)
     elif is_50k_data:
-        # 50K 数据: 使用路径最后两层 (结构/温度.run) 作为 key
+        # 50K 数据: 使用路径最后三层 (parent/structure/T.run) 作为 key
+        # 这样可以区分不同子目录,如 o-2-hills 和 for-4-times
         def make_50k_key(row):
             full_path = row.get('full_path', '')
             if full_path:
                 parts = full_path.rstrip('/').split('/')
-                # 取最后两层: 结构名/T温度.r序号.gpu序号
-                if len(parts) >= 2:
+                # 取最后三层: 父目录/结构名/T温度.r序号.gpu序号
+                if len(parts) >= 3:
+                    return f"{parts[-3]}/{parts[-2]}/{parts[-1]}".lower()
+                elif len(parts) >= 2:
+                    # 回退到两层（兼容旧数据）
                     return f"{parts[-2]}/{parts[-1]}".lower()
             return None
         df['match_key'] = df.apply(make_50k_key, axis=1)
-        print(f"    Using 50K path-based match key: structure/T.run")
+        print(f"    Using 50K path-based match key: parent/structure/T.run (3 levels)")
     elif n_cols == 9:
         # 旧的50K energy_average 格式 (已弃用)
         df['match_key'] = df.apply(
@@ -1041,17 +1047,21 @@ def load_lindemann_data_from_file(lindemann_file, system_filter=None, is_50k_dat
     
     # Create matching key
     if is_50k_data:
-        # 50K 数据: 使用路径最后两层 (结构/温度.run) 作为 key
+        # 50K 数据: 使用路径最后三层 (parent/structure/T.run) 作为 key
+        # 这样可以区分不同子目录,如 o-2-hills 和 for-4-times
         def make_50k_lindemann_key(row):
             directory = row.get('directory', '')
             if directory:
                 parts = directory.rstrip('/').split('/')
-                # 取最后两层: 结构名/T温度.r序号.gpu序号
-                if len(parts) >= 2:
+                # 取最后三层: 父目录/结构名/T温度.r序号.gpu序号
+                if len(parts) >= 3:
+                    return f"{parts[-3]}/{parts[-2]}/{parts[-1]}".lower()
+                elif len(parts) >= 2:
+                    # 回退到两层（兼容旧数据）
                     return f"{parts[-2]}/{parts[-1]}".lower()
             return None
         df['match_key'] = df.apply(make_50k_lindemann_key, axis=1)
-        print(f"    Using 50K path-based match key: structure/T.run")
+        print(f"    Using 50K path-based match key: parent/structure/T.run (3 levels)")
     else:
         # Air数据的directory格式不同，需要特殊处理
         df['match_key'] = df.apply(
