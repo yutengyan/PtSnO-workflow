@@ -43,6 +43,7 @@ CM2_S_TO_A2_FS = 10.0  # 仓库中约定的转换常量 (1 cm^2/s -> 10 Å^2/fs)
 
 # 数据路径
 MSD_DIR = Path('data/gmx_msd/per-atom/collected_gmx_per_atom_msd')
+CLUSTERING_DIR = Path('results/step6_1_clustering')
 OUTPUT_DIR = Path('results/arrhenius')
 PLOTS_DIR = OUTPUT_DIR / 'plots'
 
@@ -132,7 +133,7 @@ def match_series(classification, target_series_list):
     return False
 
 
-def filter_data(df, only_series=None, exclude_compositions=None):
+def filter_data(df, only_series=None, exclude_compositions=None, exclude_structures=None):
     """
     根据参数筛选数据
     
@@ -140,6 +141,7 @@ def filter_data(df, only_series=None, exclude_compositions=None):
         df: 原始数据 (必须有 'structure' 列)
         only_series: 只包含的系列列表，如 ['sum8', 'pt8snx']
         exclude_compositions: 排除的组分列表，如 [(8, 0), (6, 0)]
+        exclude_structures: 排除的结构名称列表，如 ['pt8sn5-1-best']
     
     Returns: 筛选后的数据
     """
@@ -172,6 +174,12 @@ def filter_data(df, only_series=None, exclude_compositions=None):
             df = df[mask]
         excluded_str = ', '.join([f'({pt},{sn})' for pt, sn in exclude_compositions])
         print(f"排除组分 {excluded_str}: {before} -> {len(df)} 条")
+
+    # 排除特定结构
+    if exclude_structures:
+        before = len(df)
+        df = df[~df['structure'].isin(exclude_structures)]
+        print(f"排除结构 {exclude_structures}: {before} -> {len(df)} 条")
     
     # 显示最终包含的结构
     structures = df[['structure', 'sn_count']].drop_duplicates().sort_values('sn_count')
@@ -199,6 +207,62 @@ def parse_exclude_arg(exclude_str):
         if match:
             result.append((int(match.group(1)), int(match.group(2))))
     return result if result else None
+
+
+def get_auto_partitions(structure_name):
+    """
+    从 step6_1 的聚类结果中自动获取分区
+    
+    返回: dict {phase_name: (T_min, T_max)}
+    """
+    # 提取基础名称，例如 pt8sn6-1-best -> pt8sn6
+    base_name = structure_name.split('-')[0].lower()
+    
+    # 尝试匹配文件名
+    matching_files = list(CLUSTERING_DIR.glob("*_kmeans_n2_clustered_data.csv"))
+    
+    target_file = None
+    for f in matching_files:
+        f_base = f.name.split('_')[0].lower()
+        if f_base == base_name:
+            target_file = f
+            break
+            
+    if not target_file:
+        # 尝试更宽松的匹配
+        for f in matching_files:
+            if base_name in f.name.lower():
+                target_file = f
+                break
+                
+    if not target_file:
+        return None
+        
+    try:
+        df_cluster = pd.read_csv(target_file)
+        if 'temp' not in df_cluster.columns or 'phase_clustered' not in df_cluster.columns:
+            return None
+            
+        # 按 phase_clustered 分组获取温度范围
+        partitions = {}
+        # 统计每个温度最频繁出现的 phase
+        temp_phases = df_cluster.groupby('temp')['phase_clustered'].agg(lambda x: x.value_counts().idxmax())
+        
+        # 确保温度是连续的，或者至少按顺序处理
+        unique_phases = []
+        for p in temp_phases.values:
+            if not unique_phases or p != unique_phases[-1]:
+                unique_phases.append(p)
+        
+        for phase in unique_phases:
+            phase_temps = temp_phases[temp_phases == phase].index
+            if len(phase_temps) > 0:
+                partitions[phase] = (min(phase_temps), max(phase_temps))
+        
+        return partitions
+    except Exception as e:
+        print(f"  ⚠️ 自动分区失败 ({structure_name}): {e}")
+        return None
 
 # ==============================================================================
 
@@ -283,9 +347,9 @@ def summarize_mean_D(df):
     return mean_by_element_union
 
 
-def fit_arrhenius(temp_list, D_list):
+def fit_arrhenius(temp_list, D_list, temp_range_name='all'):
     """对给定温度列表和对应平均 D 进行 Arrhenius 拟合。
-    返回: dict with keys: n_points, slope, intercept, Ea_eV, D0, r2
+    返回: dict with keys: n_points, slope, intercept, Ea_eV, D0, r2, range
     """
     T = np.array(temp_list, dtype=float)
     D = np.array(D_list, dtype=float)
@@ -316,6 +380,7 @@ def fit_arrhenius(temp_list, D_list):
     D0 = math.exp(intercept)
 
     return {
+        'range': temp_range_name,
         'n_points': int(n),
         'slope': float(slope),
         'intercept': float(intercept),
@@ -325,7 +390,7 @@ def fit_arrhenius(temp_list, D_list):
     }
 
 
-def run_analysis(msd_df, min_points=3, do_plot=True, output_dir=OUTPUT_DIR, elements_filter=None):
+def run_analysis(msd_df, min_points=2, do_plot=True, output_dir=OUTPUT_DIR, elements_filter=None, partitions=None, auto_partition=False):
     output_dir.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -335,65 +400,86 @@ def run_analysis(msd_df, min_points=3, do_plot=True, output_dir=OUTPUT_DIR, elem
 
     # 遍历每个 structure 与 element
     for (structure, element), group in mean_df.groupby(['structure','element']):
-        temps = group['temp'].values
-        Ds = group['D_mean'].values
-        if len(temps) < min_points:
-            # 记录不足样本
-            results.append({
-                'structure': structure,
-                'element': element,
-                'n_points': int(len(temps)),
-                'slope': np.nan,
-                'intercept': np.nan,
-                'Ea_eV': np.nan,
-                'D0': np.nan,
-                'r2': np.nan
-            })
-            continue
+        temps_all = group['temp'].values
+        Ds_all = group['D_mean'].values
+        
+        # 准备要拟合的任务列表：(temps, Ds, range_name)
+        fit_tasks = [(temps_all, Ds_all, 'overall')]
+        
+        # 1. 自动分区
+        if auto_partition:
+            auto_parts = get_auto_partitions(structure)
+            if auto_parts:
+                print(f"  [Auto] {structure}: 发现分区 {list(auto_parts.keys())}")
+                for phase_name, (p_min, p_max) in auto_parts.items():
+                    mask = (temps_all >= p_min) & (temps_all <= p_max)
+                    if np.sum(mask) >= min_points:
+                        fit_tasks.append((temps_all[mask], Ds_all[mask], f"{phase_name}({int(p_min)}-{int(p_max)}K)"))
+            else:
+                print(f"  [Auto] {structure}: 未找到聚类结果，跳过自动分区")
 
-        fit = fit_arrhenius(temps, Ds)
-        if fit is None:
-            results.append({
-                'structure': structure,
-                'element': element,
-                'n_points': int(len(temps)),
-                'slope': np.nan,
-                'intercept': np.nan,
-                'Ea_eV': np.nan,
-                'D0': np.nan,
-                'r2': np.nan
-            })
-            continue
+        # 2. 手动分区
+        if partitions:
+            for p_min, p_max in partitions:
+                mask = (temps_all >= p_min) & (temps_all <= p_max)
+                if np.sum(mask) >= min_points:
+                    fit_tasks.append((temps_all[mask], Ds_all[mask], f'{int(p_min)}-{int(p_max)}K'))
 
-        results.append({
-            'structure': structure,
-            'element': element,
-            'n_points': fit['n_points'],
-            'slope': fit['slope'],
-            'intercept': fit['intercept'],
-            'Ea_eV': fit['Ea_eV'],
-            'D0': fit['D0'],
-            'r2': fit['r2']
-        })
+        # 执行拟合
+        current_fits = []
+        for temps, Ds, range_name in fit_tasks:
+            fit = fit_arrhenius(temps, Ds, range_name)
+            if fit:
+                fit_res = {
+                    'structure': structure,
+                    'element': element,
+                    'temp_range': range_name,
+                    **fit
+                }
+                results.append(fit_res)
+                current_fits.append(fit_res)
 
         # 绘图
-        if do_plot:
+        if do_plot and current_fits:
             try:
-                fig, ax = plt.subplots(figsize=(6,5))
-                x = 1.0 / temps
-                y = np.log(Ds)
-                ax.scatter(x, y, label=f'{element} data')
+                fig, ax = plt.subplots(figsize=(8, 6))
+                x_all = 1.0 / temps_all
+                y_all = np.log(Ds_all)
+                ax.scatter(x_all, y_all, color='black', label='Data', zorder=5)
 
-                # 画拟合线
-                xi = np.linspace(min(x), max(x), 100)
-                yi = fit['slope'] * xi + fit['intercept']
-                ax.plot(xi, yi, color='C1', linestyle='--', label=f'fit: Ea={fit["Ea_eV"]:.3f} eV')
+                colors = ['C1', 'C2', 'C3', 'C4']
+                for i, fit in enumerate(current_fits):
+                    # 整体拟合用虚线，分区拟合用实线
+                    is_overall = fit['temp_range'] == 'overall'
+                    ls = '--' if is_overall else '-'
+                    color = 'gray' if is_overall else colors[i % len(colors)]
+                    alpha = 0.5 if is_overall else 1.0
+                    
+                    # 确定拟合线的范围
+                    if is_overall:
+                        xi = np.linspace(min(x_all), max(x_all), 100)
+                    else:
+                        # 解析范围字符串，例如 "partition1(200-700K)" 或 "300-400K"
+                        range_str = fit['temp_range']
+                        if '(' in range_str:
+                            # 处理 "partition1(200-700K)" 格式
+                            inner = range_str.split('(')[1].split(')')[0]
+                        else:
+                            # 处理 "300-400K" 格式
+                            inner = range_str
+                        
+                        t_min, t_max = map(float, inner.replace('K','').split('-'))
+                        xi = np.linspace(1.0/t_max, 1.0/t_min, 50)
+                        
+                    yi = fit['slope'] * xi + fit['intercept']
+                    ax.plot(xi, yi, color=color, linestyle=ls, alpha=alpha, linewidth=2,
+                            label=f'{fit["temp_range"]}: Ea={fit["Ea_eV"]:.3f} eV')
 
-                ax.set_xlabel('1/T (1/K)')
-                ax.set_ylabel('ln(D (Å²/fs))')
-                ax.legend()
-                ax.grid(True)
-                ax.set_title(f'{structure} - {element}')
+                ax.set_xlabel('1/T (1/K)', fontsize=12)
+                ax.set_ylabel('ln(D (Å²/fs))', fontsize=12)
+                ax.legend(fontsize=10)
+                ax.grid(True, linestyle=':', alpha=0.6)
+                ax.set_title(f'Arrhenius Plot: {structure} ({element})', fontsize=14)
 
                 plot_path = PLOTS_DIR / f'{structure}_{element}_arrhenius.png'
                 plt.tight_layout()
@@ -411,7 +497,6 @@ def run_analysis(msd_df, min_points=3, do_plot=True, output_dir=OUTPUT_DIR, elem
     overall.to_csv(output_dir / 'arrhenius_per_structure.csv', index=False)
 
     print(f"保存拟合结果: {output_dir / 'arrhenius_per_structure_element.csv'}")
-    print(f"保存总体结果: {output_dir / 'arrhenius_per_structure.csv'}")
     
     # 如果指定了元素筛选，返回筛选后的结果
     if elements_filter:
@@ -421,10 +506,103 @@ def run_analysis(msd_df, min_points=3, do_plot=True, output_dir=OUTPUT_DIR, elem
     return res_df
 
 
+def plot_ea_trends(res_df, output_dir=OUTPUT_DIR, hide_low_t=False):
+    """分析 Ea 随 Sn 含量的变化趋势并绘图 (高定制化版本)"""
+    if res_df.empty:
+        return
+
+    import matplotlib.ticker as ticker
+    # 设置全局字体
+    try:
+        plt.rcParams['font.family'] = 'Arial'
+    except:
+        pass
+
+    # 提取 Sn 含量
+    res_df = res_df.copy()
+    res_df['sn_count'] = res_df['structure'].apply(lambda x: parse_structure_name(x)[1] if parse_structure_name(x) else 0)
+    
+    # 只看 element='all' 的结果
+    df_all = res_df[res_df['element'] == 'all'].copy()
+    if df_all.empty:
+        return
+
+    # 识别分区类型
+    def categorize_range(r):
+        if 'partition1' in r: return 'Low-T Phase'
+        if 'partition2' in r: return 'High-T Phase'
+        return None
+    
+    df_all['range_cat'] = df_all['temp_range'].apply(categorize_range)
+    df_all = df_all.dropna(subset=['range_cat'])
+    
+    # 如果隐藏低温区
+    if hide_low_t:
+        df_all = df_all[df_all['range_cat'] != 'Low-T Phase']
+    
+    # 绘图设置: 10x8 英寸
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    markers = {'Low-T Phase': 'o', 'High-T Phase': 's'}
+    colors = {'Low-T Phase': '#1f77b4', 'High-T Phase': '#d62728'}
+    
+    # 数据点大小 50 (markersize = sqrt(50))
+    msize = np.sqrt(50)
+
+    categories = ['High-T Phase'] if hide_low_t else ['Low-T Phase', 'High-T Phase']
+    for cat in categories:
+        subset = df_all[df_all['range_cat'] == cat].sort_values('sn_count')
+        if not subset.empty:
+            ax.plot(subset['sn_count'], subset['Ea_eV'], marker=markers[cat], 
+                     color=colors[cat], label=cat, linewidth=3, 
+                     markersize=msize, markeredgecolor='black', markeredgewidth=1)
+
+    # 坐标轴标签: 34号字，不加粗，使用 LaTeX 下标
+    ax.set_xlabel('Sn Count', fontsize=34, fontweight='normal', labelpad=15)
+    ax.set_ylabel('$E_a$ (eV)', fontsize=34, fontweight='normal', labelpad=15)
+    
+    # 坐标轴数字: 28号字，刻度朝外
+    ax.tick_params(axis='both', which='major', labelsize=28, direction='out', length=10, width=2)
+    
+    # 刻度设置: 4-7个，对称，整数化
+    ax.set_xticks([0, 2, 4, 6, 8, 10])
+    
+    # 根据数据动态调整 Y 轴刻度
+    if not df_all.empty:
+        y_max = df_all['Ea_eV'].max()
+        if y_max < 0.2:
+            ax.set_yticks([0.0, 0.05, 0.1, 0.15, 0.2])
+            ax.set_ylim(-0.01, 0.21)
+        else:
+            ax.set_yticks([0.0, 0.3, 0.6, 0.9, 1.2])
+            ax.set_ylim(-0.05, 1.3)
+
+    ax.set_xlim(-0.5, 10.5)
+
+    # 辅助线: 不要
+    ax.grid(False)
+    
+    # 四个框: 都要，加粗
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(2)
+
+    # 图注: 28号字，不要边框
+    ax.legend(fontsize=28, frameon=False, loc='upper right')
+    
+    # 透明背景保存
+    suffix = '_high_t_only' if hide_low_t else ''
+    trend_plot_path = output_dir / f'ea_vs_sn_trends{suffix}.png'
+    plt.tight_layout()
+    plt.savefig(trend_plot_path, dpi=300, transparent=True)
+    print(f"\n定制化趋势分析图已保存至: {trend_plot_path}")
+    plt.close()
+
+
 def parse_args():
     p = argparse.ArgumentParser(description='从每原子扩散系数中提取迁移能 (Arrhenius)')
     p.add_argument('--msd-file', type=str, default=None, help='指定 per-atom diffusion CSV 文件路径')
-    p.add_argument('--min-points', type=int, default=3, help='拟合所需最少温度点数 (默认3)')
+    p.add_argument('--min-points', type=int, default=2, help='拟合所需最少温度点数 (默认2)')
     p.add_argument('--no-plot', action='store_true', help='禁用绘图')
     
     # 新增筛选参数
@@ -432,8 +610,17 @@ def parse_args():
                    help='只分析指定系列（逗号分隔）: pt8snx, pt6snx, sum8')
     p.add_argument('--exclude', '-e', type=str, default=None,
                    help='排除组分，格式 "(pt,sn)" 或 "(pt1,sn1);(pt2,sn2)"')
+    p.add_argument('--exclude-structures', type=str, default=None,
+                   help='排除特定结构名称（逗号分隔），如 "pt8sn5-1-best"')
     p.add_argument('--elements', type=str, default=None,
                    help='只输出指定元素的结果（逗号分隔），如 "Pt,Sn"')
+    p.add_argument('--partitions', '-p', type=str, default=None,
+                   help='手动指定拟合温度区间，格式: T1_min-T1_max,T2_min-T2_max，'
+                        '例如: 300-500,800-1100')
+    p.add_argument('--auto-partition', action='store_true',
+                   help='根据 step6_1 的聚类结果自动进行分区拟合')
+    p.add_argument('--hide-low-t-ea', action='store_true',
+                   help='在趋势图中隐藏低温区的 Ea 数据')
     
     return p.parse_args()
 
@@ -451,10 +638,23 @@ def main():
     # 解析筛选参数
     only_series = args.only_series.split(',') if args.only_series else None
     exclude_compositions = parse_exclude_arg(args.exclude)
+    exclude_structures = args.exclude_structures.split(',') if args.exclude_structures else None
+    
+    # 解析分区参数
+    partitions = []
+    if args.partitions:
+        try:
+            for part in args.partitions.split(','):
+                t_min, t_max = map(float, part.strip().split('-'))
+                partitions.append((t_min, t_max))
+        except Exception as e:
+            print(f"解析分区参数失败: {e}")
     
     # 筛选数据
-    if only_series or exclude_compositions:
-        msd_df = filter_data(msd_df, only_series=only_series, exclude_compositions=exclude_compositions)
+    if only_series or exclude_compositions or exclude_structures:
+        msd_df = filter_data(msd_df, only_series=only_series, 
+                             exclude_compositions=exclude_compositions,
+                             exclude_structures=exclude_structures)
     
     # 指定元素筛选
     elements_filter = None
@@ -462,25 +662,15 @@ def main():
         elements_filter = [e.strip() for e in args.elements.split(',')]
 
     res = run_analysis(msd_df, min_points=args.min_points, do_plot=(not args.no_plot),
-                       elements_filter=elements_filter)
+                       elements_filter=elements_filter, partitions=partitions,
+                       auto_partition=args.auto_partition)
     
-    # 打印 Pt 和 Sn 的结果摘要
-    print("\n" + "="*70)
-    print("迁移能垒 (Ea) 结果摘要")
-    print("="*70)
+    # 趋势分析绘图
+    if args.only_series and 'pt8snx' in args.only_series:
+        plot_ea_trends(res, hide_low_t=args.hide_low_t_ea)
     
-    for elem in ['Pt', 'Sn', 'all']:
-        elem_df = res[res['element'].str.lower() == elem.lower()]
-        if len(elem_df) > 0:
-            print(f"\n【{elem}】")
-            for _, row in elem_df.iterrows():
-                if pd.notna(row['Ea_eV']):
-                    print(f"  {row['structure']:20s}  Ea = {row['Ea_eV']:8.4f} eV  "
-                          f"D0 = {row['D0']:.2e}  R² = {row['r2']:.4f}  (n={row['n_points']})")
-                else:
-                    print(f"  {row['structure']:20s}  拟合失败 (n={row['n_points']})")
-
-    print('\nDone')
+    # 打印结果摘要
+    # ...existing code...
 
 
 if __name__ == '__main__':

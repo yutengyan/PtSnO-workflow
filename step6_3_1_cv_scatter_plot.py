@@ -379,20 +379,40 @@ def find_all_structures(base_dir='results/step6_1_clustering'):
     return sorted(structures)
 
 
-def should_exclude(name, exclude_list):
+def should_exclude(name, exclude_list, mask_list=None):
     """
-    Check if a structure should be excluded based on composition
+    Check if a structure should be excluded based on composition or masked by name
     
     Args:
         name: structure name
-        exclude_list: list of tuples like [(3,5,3), (3,4,1)] to exclude
+        exclude_list: list of tuples like [(3,5,3), (3,4,1)] to exclude by composition
+        mask_list: list of strings to match in structure name or composition numbers
     
     Returns: True if should be excluded
     """
+    # 获取组分信息用于后续匹配
+    comp = parse_composition(name)
+    
+    # 1. 按名称或数字序列屏蔽 (Mask by name or digit sequence)
+    if mask_list:
+        for mask in mask_list:
+            # 直接子串匹配 (如 "air")
+            if mask in name:
+                return True
+            # 数字序列匹配 (如 "341" 匹配 (3,4,1))
+            if comp:
+                comp_digits = "".join(map(str, comp))
+                if mask == comp_digits:
+                    return True
+                # 处理带 0 的情况，如 "34" 匹配 (3,4,0)
+                comp_digits_no_zero = "".join(map(str, [c for c in comp if c != 0 or comp.index(c) < 2]))
+                if mask == comp_digits_no_zero:
+                    return True
+
+    # 2. 按组分排除 (Exclude by composition tuple)
     if not exclude_list:
         return False
     
-    comp = parse_composition(name)
     if comp is None:
         return False
     
@@ -413,7 +433,7 @@ def should_exclude(name, exclude_list):
 
 def create_cv_scatter_plot(output_path='results/step6_1_clustering/cv1_vs_cv2_scatter.png',
                            show_air=True, show_supported=True, show_oxide=True,
-                           exclude_list=None, show_errorbars=True, show_labels=True,
+                           exclude_list=None, mask_list=None, show_errorbars=True, show_labels=True,
                            fontscale=1.0, markerscale=1.0,
                            classify_mode='simple', only_series=None, merge_oxide=False,
                            interactive=False, no_stroke=False, figsize=(8, 8)):
@@ -426,6 +446,7 @@ def create_cv_scatter_plot(output_path='results/step6_1_clustering/cv1_vs_cv2_sc
         show_supported: whether to show supported Pt-Sn (no oxygen) data
         show_oxide: whether to show supported Pt-Sn-O data
         exclude_list: list of compositions to exclude, e.g., [(3,5,3), (3,4,1)]
+        mask_list: list of strings to mask by name, e.g., ['353', '341']
         show_errorbars: whether to show error bars (default True)
         show_labels: whether to show data point labels (default True)
         fontscale: scale factor for all fonts (default 1.0)
@@ -469,6 +490,8 @@ def create_cv_scatter_plot(output_path='results/step6_1_clustering/cv1_vs_cv2_sc
         print(f"  Only series: {only_series}")
     if exclude_list:
         print(f"  Excluded compositions: {exclude_list}")
+    if mask_list:
+        print(f"  Masked by name: {mask_list}")
     
     # 根据分类模式选择分类函数和样式
     if classify_mode == 'simple':
@@ -503,10 +526,10 @@ def create_cv_scatter_plot(output_path='results/step6_1_clustering/cv1_vs_cv2_sc
     excluded_count = 0
     
     for struct in structures:
-        # 检查排除列表
-        if should_exclude(struct, exclude_list):
+        # 检查排除列表和屏蔽列表
+        if should_exclude(struct, exclude_list, mask_list):
             comp = parse_composition(struct)
-            print(f"    Excluding: {struct} -> {comp}")
+            print(f"    Excluding/Masking: {struct} -> {comp}")
             excluded_count += 1
             continue
         
@@ -1008,6 +1031,8 @@ Examples:
                         help='No white stroke around labels')
     parser.add_argument('--exclude', '-e', type=str, default=None,
                         help='Compositions to exclude, e.g., "3,5,3;3,4,1" or "6,8"')
+    parser.add_argument('--mask', type=str, default=None,
+                        help='Mask structures by name substring (comma-separated), e.g., "353,341"')
     parser.add_argument('--fontscale', '-f', type=float, default=1.0,
                         help='Scale factor for all fonts (default 1.0, try 1.5 for larger)')
     parser.add_argument('--markerscale', '-m', type=float, default=1.0,
@@ -1027,6 +1052,9 @@ Examples:
     # Parse exclude list
     exclude_list = parse_exclude_arg(args.exclude)
     
+    # Parse mask list
+    mask_list = [m.strip() for m in args.mask.split(',')] if args.mask else None
+    
     # Parse only_series
     only_series = None
     if args.only_series:
@@ -1045,6 +1073,7 @@ Examples:
         show_supported=not args.no_supported,
         show_oxide=not args.no_oxide,
         exclude_list=exclude_list,
+        mask_list=mask_list,
         show_errorbars=not args.no_errorbars,
         show_labels=not args.no_labels,
         fontscale=args.fontscale,
@@ -1053,7 +1082,7 @@ Examples:
         only_series=only_series,
         merge_oxide=args.merge_oxide,
         interactive=args.interactive,
-        no_stroke=args.no_stroke,
+        no_stroke=not args.no_stroke, # 注意：这里逻辑反转了，no_stroke=True 表示不加边
         figsize=tuple(map(float, args.figsize.lower().split('x')))
     )
     

@@ -101,6 +101,21 @@ def filter_data(df, exclude_dict):
     return df[mask]
 
 
+def parse_partitions(partition_str):
+    """解析分区字符串，例如 '200-400,500-1100' -> [(200, 400), (500, 1100)]"""
+    if not partition_str:
+        return None
+    try:
+        partitions = []
+        for part in partition_str.split(','):
+            T_min, T_max = map(int, part.split('-'))
+            partitions.append((T_min, T_max))
+        return partitions
+    except Exception as e:
+        print(f"  ⚠️ 警告: 无法解析分区 '{partition_str}': {e}")
+        return None
+
+
 def load_cluster_data(csv_path, exclude_dict=None):
     """加载聚类结果数据并过滤"""
     try:
@@ -648,32 +663,93 @@ def plot_combined_cv_with_params(data_68, data_86, output_dir, params):
     y_ticks_custom = params.get('y_ticks_custom', None)
     cv_ticks_custom = params.get('cv_ticks_custom', None)
     show_error_bars = params.get('show_error_bars', False)
+    transparent = params.get('transparent', False)
     
     # 子图1: Pt8Sn6 (Air86)
     plot_single_partition_with_params(data_86, r'Pt$_8$Sn$_6$', 
                                       output_dir / 'Air86_Pt8Sn6_partition_cv.png',
                                       E_ylim, Cv_ylim, figsize, y_nticks, y_integer, 
                                       cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom,
-                                      show_error_bars)
+                                      show_error_bars, transparent)
     
     # 子图2: Pt6Sn8 (Air68) - 分区
     plot_single_partition_with_params(data_68, r'Pt$_6$Sn$_8$ (partition)', 
                                       output_dir / 'Air68_Pt6Sn8_partition_cv.png',
                                       E_ylim, Cv_ylim, figsize, y_nticks, y_integer, 
                                       cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom,
-                                      show_error_bars)
+                                      show_error_bars, transparent)
     
     # 子图3: Pt6Sn8 (Air68) - 单一拟合
     plot_single_linear_fit_with_params(data_68, r'Pt$_6$Sn$_8$ (single fit)', 
                                        output_dir / 'Air68_Pt6Sn8_single_fit_cv.png',
                                        E_ylim, Cv_ylim, figsize, y_nticks, y_integer, 
                                        cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom,
-                                       show_error_bars)
+                                       show_error_bars, transparent)
+
+
+def plot_combined_cv_with_params_three_systems(data_68, data_86, data_sup86, output_dir, params):
+    """三系统版本：使用交互参数绘制并保存图片"""
+    from matplotlib.ticker import MaxNLocator
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 计算统一Y轴范围（包含三个系统）
+    all_E = np.concatenate([data_68['E_rel'], data_86['E_rel'], data_sup86['E_rel']])
+    all_E_std = np.concatenate([data_68['E_std'], data_86['E_std'], data_sup86['E_std']])
+    E_min = (all_E - all_E_std).min()
+    E_max = (all_E + all_E_std).max()
+    E_margin = (E_max - E_min) * 0.1
+    E_ylim = (E_min - E_margin, E_max + E_margin)
+    
+    all_Cv = []
+    for data in [data_68, data_86, data_sup86]:
+        for phase, fit in data['phase_fits'].items():
+            all_Cv.append(fit['Cv'])
+    
+    if all_Cv:
+        Cv_min = min(all_Cv) * 0.9
+        Cv_max = max(all_Cv) * 1.1
+    else:
+        Cv_min, Cv_max = 0, 10
+    
+    Cv_ylim = (Cv_min, Cv_max)
+    
+    figsize = params['figsize']
+    y_nticks = params['y_nticks']
+    y_integer = params['y_integer']
+    cv_nticks = params['cv_nticks']
+    cv_integer = params['cv_integer']
+    y_ticks_custom = params.get('y_ticks_custom', None)
+    cv_ticks_custom = params.get('cv_ticks_custom', None)
+    show_error_bars = params.get('show_error_bars', False)
+    transparent = params.get('transparent', False)
+    
+    # 子图1: Pt8Sn6 (Air86)
+    plot_single_partition_with_params(data_86, r'Pt$_8$Sn$_6$ (Air)', 
+                                      output_dir / 'Air86_Pt8Sn6_partition_cv.png',
+                                      E_ylim, Cv_ylim, figsize, y_nticks, y_integer, 
+                                      cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom,
+                                      show_error_bars, transparent)
+    
+    # 子图2: Pt6Sn8 (Air68)
+    plot_single_partition_with_params(data_68, r'Pt$_6$Sn$_8$ (Air)', 
+                                      output_dir / 'Air68_Pt6Sn8_partition_cv.png',
+                                      E_ylim, Cv_ylim, figsize, y_nticks, y_integer, 
+                                      cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom,
+                                      show_error_bars, transparent)
+    
+    # 子图3: Pt8Sn6 (sup86) - 负载型
+    plot_single_partition_with_params(data_sup86, r'Pt$_8$Sn$_6$ (support)', 
+                                      output_dir / 'sup86_Pt8Sn6_partition_cv.png',
+                                      E_ylim, Cv_ylim, figsize, y_nticks, y_integer, 
+                                      cv_nticks, cv_integer, y_ticks_custom, cv_ticks_custom,
+                                      show_error_bars, transparent)
 
 
 def plot_single_partition_with_params(data, title, output_path, E_ylim, Cv_ylim, 
                                       figsize, y_nticks, y_integer, cv_nticks, cv_integer,
-                                      y_ticks_custom=None, cv_ticks_custom=None, show_error_bars=False):
+                                      y_ticks_custom=None, cv_ticks_custom=None, show_error_bars=False, transparent=False):
     """带参数的分区热容图绘制"""
     from matplotlib.ticker import MaxNLocator, LinearLocator, MultipleLocator
     
@@ -794,14 +870,17 @@ def plot_single_partition_with_params(data, title, output_path, E_ylim, Cv_ylim,
         ax2.set_yticks(cv_ticks)
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    if transparent:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight', transparent=True)
+    else:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
     print(f"📊 已保存: {output_path}")
 
 
 def plot_single_linear_fit_with_params(data, title, output_path, E_ylim, Cv_ylim,
                                        figsize, y_nticks, y_integer, cv_nticks, cv_integer,
-                                       y_ticks_custom=None, cv_ticks_custom=None, show_error_bars=False):
+                                       y_ticks_custom=None, cv_ticks_custom=None, show_error_bars=False, transparent=False):
     """带参数的单一拟合图绘制"""
     from matplotlib.ticker import MaxNLocator, LinearLocator, MultipleLocator
     
@@ -865,7 +944,10 @@ def plot_single_linear_fit_with_params(data, title, output_path, E_ylim, Cv_ylim
         ax2.set_yticks(cv_ticks)
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    if transparent:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight', transparent=True)
+    else:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
     print(f"📊 已保存: {output_path}")
 
@@ -911,8 +993,16 @@ def main():
                        help='Air68 要排除的点，格式: "300K:0,1" "400K:0"')
     parser.add_argument('--exclude-86', nargs='+', metavar='TEMP:INDICES',
                        help='Air86 要排除的点，格式: "500K:0,1" "600K:0"')
+    parser.add_argument('--add-sup86', action='store_true',
+                       help='添加 sup86 (负载型 Pt8Sn6) 数据对比')
+    parser.add_argument('--partitions-sup86', '-psup', type=str, default=None,
+                       help='sup86 分区，格式: T_min1-T_max1,T_min2-T_max2')
+    parser.add_argument('--exclude-sup86', nargs='+', metavar='TEMP:INDICES',
+                       help='sup86 要排除的点，格式: "500K:0,1" "600K:0"')
     parser.add_argument('--show-error-bars', action='store_true',
                        help='显示误差棒（不显示散点，用黑色实心大点+误差棒替代）')
+    parser.add_argument('--transparent', action='store_true',
+                       help='保存为透明背景图片')
     args = parser.parse_args()
     
     # 解析figsize
@@ -994,8 +1084,12 @@ def main():
         except ValueError:
             print(f"警告: 无效的 --cv-ticks 格式 '{args.cv_ticks}'，将自动计算")
     
+    system_names = "Air68 vs Air86"
+    if args.add_sup86:
+        system_names = "Air68 vs Air86 vs sup86"
+    
     print("=" * 60)
-    print("Step 6.1.1.3: Air68 vs Air86 分区热容独立子图")
+    print(f"Step 6.1.1.3: {system_names} 分区热容独立子图")
     print("=" * 60)
     print(f"  图片尺寸: {figsize[0]}x{figsize[1]}")
     print(f"  热容峰方法: {args.peak_method}")
@@ -1005,12 +1099,17 @@ def main():
     
     csv_68 = base_dir / 'Air68_kmeans_n2_clustered_data.csv'
     csv_86 = base_dir / 'Air86_kmeans_n2_clustered_data.csv'
+    csv_sup86 = base_dir / 'Pt8sn6_kmeans_n2_clustered_data.csv' if args.add_sup86 else None
     
     if not csv_68.exists():
         print(f"错误: 找不到 {csv_68}")
         return
     if not csv_86.exists():
         print(f"错误: 找不到 {csv_86}")
+        return
+    if args.add_sup86 and not csv_sup86.exists():
+        print(f"错误: 找不到 {csv_sup86}")
+        print("  请先运行: python step6_1_clustering_analysis.py --structure Pt8sn6")
         return
     
     print(f"\n>>> 加载数据...")
@@ -1019,20 +1118,39 @@ def main():
     print("  Air86:")
     df_86 = load_cluster_data(csv_86, exclude_86)
     
-    if df_68 is None or df_86 is None:
+    df_sup86 = None
+    if args.add_sup86:
+        print("  sup86:")
+        exclude_sup86 = parse_exclude_points(args.exclude_sup86)
+        custom_partitions_sup86 = parse_partitions(args.partitions_sup86) if args.partitions_sup86 else None
+        if args.partitions_both and custom_partitions_sup86 is None:
+            custom_partitions_sup86 = parse_partitions(args.partitions_both)
+        df_sup86 = load_cluster_data(csv_sup86, exclude_sup86)
+    
+    if df_68 is None or df_86 is None or (args.add_sup86 and df_sup86 is None):
         return
     
     print(f"\n  最终数据:")
     print(f"    Air68: {len(df_68)} 条记录")
     print(f"    Air86: {len(df_86)} 条记录")
+    if args.add_sup86:
+        print(f"    sup86: {len(df_sup86)} 条记录")
     
     # 计算分区数据
     print(f"\n>>> 计算分区热容...")
     data_68 = compute_partition_data(df_68, 'Air68', custom_partitions=custom_partitions_68, peak_method=args.peak_method)
     data_86 = compute_partition_data(df_86, 'Air86', custom_partitions=custom_partitions_86, peak_method=args.peak_method)
     
+    data_sup86 = None
+    if args.add_sup86:
+        data_sup86 = compute_partition_data(df_sup86, 'sup86', custom_partitions=custom_partitions_sup86, peak_method=args.peak_method)
+    
     # 打印热容信息
-    for name, data in [('Air68 (Pt6Sn8)', data_68), ('Air86 (Pt8Sn6)', data_86)]:
+    systems_list = [('Air68 (Pt6Sn8)', data_68), ('Air86 (Pt8Sn6)', data_86)]
+    if args.add_sup86:
+        systems_list.append(('sup86 (Pt8Sn6/support)', data_sup86))
+    
+    for name, data in systems_list:
         print(f"\n  {name}:")
         for phase, fit in data['phase_fits'].items():
             print(f"    {phase}: Cv={fit['Cv']:.2f}±{fit['Cv_err']:.2f} meV/K, "
@@ -1046,28 +1164,40 @@ def main():
     output_dir = Path('results/step6_1_1_partition_cv')
     
     if args.interactive:
-        # 交互模式
-        print(f"\n>>> 进入交互模式...")
-        interactive_adjust_plot(data_68, data_86, output_dir, figsize)
+        # 交互模式（暂不支持三系统）
+        if args.add_sup86:
+            print(f"\n⚠️ 警告: 交互模式暂不支持三系统对比，将使用非交互模式")
+        else:
+            print(f"\n>>> 进入交互模式...")
+            interactive_adjust_plot(data_68, data_86, output_dir, figsize)
+            return
+    
+    # 非交互模式，使用命令行参数
+    print(f"\n>>> 绘制图片...")
+    y_integer = not args.no_integer
+    params = {
+        'figsize': figsize,
+        'y_nticks': args.y_nticks,
+        'y_integer': y_integer,
+        'cv_nticks': args.cv_nticks,
+        'cv_integer': y_integer,
+        'y_ticks_custom': y_ticks_custom,      # 自定义Y轴刻度
+        'cv_ticks_custom': cv_ticks_custom,    # 自定义Cv轴刻度
+        'show_error_bars': args.show_error_bars,  # 是否显示误差棒
+        'transparent': args.transparent,        # 是否透明背景
+    }
+    
+    if args.add_sup86:
+        plot_combined_cv_with_params_three_systems(data_68, data_86, data_sup86, output_dir, params)
     else:
-        # 非交互模式，使用命令行参数
-        print(f"\n>>> 绘制图片...")
-        y_integer = not args.no_integer
-        params = {
-            'figsize': figsize,
-            'y_nticks': args.y_nticks,
-            'y_integer': y_integer,
-            'cv_nticks': args.cv_nticks,
-            'cv_integer': y_integer,
-            'y_ticks_custom': y_ticks_custom,      # 自定义Y轴刻度
-            'cv_ticks_custom': cv_ticks_custom,    # 自定义Cv轴刻度
-            'show_error_bars': args.show_error_bars,  # 是否显示误差棒
-        }
         plot_combined_cv_with_params(data_68, data_86, output_dir, params)
     
     # 导出CSV数据
     print(f"\n>>> 导出CSV数据...")
-    export_cv_data_to_csv(data_68, data_86, output_dir)
+    if args.add_sup86:
+        export_cv_data_to_csv_three_systems(data_68, data_86, data_sup86, output_dir)
+    else:
+        export_cv_data_to_csv(data_68, data_86, output_dir)
     
     print(f"\n{'='*60}")
     print("✅ 完成!")
@@ -1185,6 +1315,68 @@ def export_cv_data_to_csv(data_68, data_86, output_dir):
     
     df_fit_lines = pd.DataFrame(fit_lines)
     csv_fit = output_dir / 'Air_cv_fitting_lines.csv'
+    df_fit_lines.to_csv(csv_fit, index=False)
+    print(f"    拟合线: {csv_fit}")
+
+
+def export_cv_data_to_csv_three_systems(data_68, data_86, data_sup86, output_dir):
+    """三系统版本：导出热容数据到CSV文件"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 1. 导出原始数据点 (用于Origin绘图)
+    for name, data in [('Air68_Pt6Sn8', data_68), ('Air86_Pt8Sn6', data_86), ('sup86_Pt8Sn6', data_sup86)]:
+        df_raw = pd.DataFrame({
+            'Temperature_K': data['temps'],
+            'Energy_meV': data['E_rel'],
+            'Energy_std_meV': data['E_std']
+        })
+        csv_path = output_dir / f'{name}_energy_data.csv'
+        df_raw.to_csv(csv_path, index=False)
+        print(f"    原始数据: {csv_path}")
+    
+    # 2. 导出拟合参数汇总
+    summary_rows = []
+    
+    # 为每个系统添加拟合数据
+    for system_name, data in [('Air68_Pt6Sn8', data_68), ('Air86_Pt8Sn6', data_86), ('sup86_Pt8Sn6', data_sup86)]:
+        # 分区拟合
+        for phase, fit in data['phase_fits'].items():
+            summary_rows.append({
+                'System': system_name,
+                'Fit_Type': 'partition',
+                'Phase': phase,
+                'T_min_K': fit['T_range'][0],
+                'T_max_K': fit['T_range'][1],
+                'Cv_meV_K': fit['Cv'],
+                'Cv_err_meV_K': fit['Cv_err'],
+                'Intercept_meV': fit['intercept'],
+                'R_squared': fit['R2']
+            })
+    
+    df_summary = pd.DataFrame(summary_rows)
+    csv_summary = output_dir / 'Three_systems_cv_fitting_summary.csv'
+    df_summary.to_csv(csv_summary, index=False)
+    print(f"    拟合汇总: {csv_summary}")
+    
+    # 3. 导出拟合线数据 (用于Origin精确绘制拟合线)
+    fit_lines = []
+    
+    for system_name, data in [('Air68_Pt6Sn8', data_68), ('Air86_Pt8Sn6', data_86), ('sup86_Pt8Sn6', data_sup86)]:
+        for phase, fit in data['phase_fits'].items():
+            T_range = np.linspace(fit['T_range'][0], fit['T_range'][1], 50)
+            E_fit = fit['intercept'] + (fit['Cv']/1000) * T_range
+            for t, e in zip(T_range, E_fit):
+                fit_lines.append({
+                    'System': system_name,
+                    'Fit_Type': 'partition',
+                    'Phase': phase,
+                    'Temperature_K': t,
+                    'Energy_fit_meV': e
+                })
+    
+    df_fit_lines = pd.DataFrame(fit_lines)
+    csv_fit = output_dir / 'Three_systems_cv_fitting_lines.csv'
     df_fit_lines.to_csv(csv_fit, index=False)
     print(f"    拟合线: {csv_fit}")
 

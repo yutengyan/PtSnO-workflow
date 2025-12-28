@@ -413,6 +413,14 @@ def main():
                        help='对齐两个系统的Y轴范围，便于直接对比')
     parser.add_argument('--hide-x-label', action='store_true',
                        help='隐藏X轴标签和刻度标签（用于组合图）')
+    parser.add_argument('--transparent', action='store_true',
+                       help='保存为透明背景图片')
+    parser.add_argument('--add-sup86', action='store_true',
+                       help='添加 sup86 (负载型 Pt8Sn6) 数据对比')
+    parser.add_argument('--partitions-sup86', type=str, metavar='T1-T2,T3-T4',
+                       help='sup86 自定义分区，格式: 200-400,500-1100')
+    parser.add_argument('--exclude-sup86', nargs='+', metavar='TEMP:INDICES',
+                       help='sup86 要排除的点，格式: "500K:0,1,2"')
     
     args = parser.parse_args()
     
@@ -427,19 +435,25 @@ def main():
     # 解析参数
     exclude_68 = parse_exclude_points(args.exclude_68)
     exclude_86 = parse_exclude_points(args.exclude_86)
+    exclude_sup86 = parse_exclude_points(args.exclude_sup86) if args.add_sup86 else {}
     partitions_68 = parse_partitions(args.partitions_68)
     partitions_86 = parse_partitions(args.partitions_86)
+    partitions_sup86 = parse_partitions(args.partitions_sup86) if args.add_sup86 else None
     y_ticks = parse_y_ticks(args.y_ticks)
     x_ticks = parse_x_ticks(args.x_ticks)
     x_nticks = args.x_nticks
     
-    print(f"\nStep 6.1.3: Air68 和 Air86 Lindemann指数图（分开绘制）")
+    system_names = "Air68、Air86"
+    if args.add_sup86:
+        system_names += "、sup86"
+    print(f"\nStep 6.1.3: {system_names} Lindemann指数图（分开绘制）")
     print(f"图片尺寸: {figsize[0]}x{figsize[1]}, 分辨率: {args.dpi} dpi")
     
     # 数据路径
     base_dir = Path('results/step6_1_clustering')
     csv_68 = base_dir / 'Air68_kmeans_n2_clustered_data.csv'
     csv_86 = base_dir / 'Air86_kmeans_n2_clustered_data.csv'
+    csv_sup86 = base_dir / 'Pt8sn6_kmeans_n2_clustered_data.csv' if args.add_sup86 else None
     
     # 检查文件是否存在
     if not csv_68.exists():
@@ -450,6 +464,11 @@ def main():
     if not csv_86.exists():
         print(f"\n✗ 错误: 找不到 Air86 数据文件: {csv_86}")
         print("  请先运行: python step6_1_clustering_analysis.py")
+        return 1
+    
+    if args.add_sup86 and not csv_sup86.exists():
+        print(f"\n✗ 错误: 找不到 sup86 数据文件: {csv_sup86}")
+        print("  请先运行: python step6_1_clustering_analysis.py --structure Pt8sn6")
         return 1
     
     output_dir = Path('results/step6_1_partition_cv')
@@ -481,11 +500,30 @@ def main():
     if data_86 is None:
         return 1
     
+    # ==================== sup86 (可选) ====================
+    data_sup86 = None
+    if args.add_sup86:
+        print(f"\n>>> 处理 sup86 (负载型 Pt8Sn6)...")
+        if exclude_sup86:
+            print(f"  排除点:")
+            for temp, indices in exclude_sup86.items():
+                print(f"    {temp}K: {indices}")
+        if partitions_sup86:
+            print(f"  自定义分区: {partitions_sup86}")
+        
+        data_sup86 = load_clustering_data(csv_sup86, exclude_sup86)
+        if data_sup86 is None:
+            return 1
+    
     # 计算统一的Y轴范围（如果启用对齐）
     y_lim = None
     if args.align_y_axis:
-        y_min = min(data_68['delta'].min(), data_86['delta'].min())
-        y_max = max(data_68['delta'].max(), data_86['delta'].max())
+        all_data = [data_68, data_86]
+        if data_sup86 is not None:
+            all_data.append(data_sup86)
+        
+        y_min = min(d['delta'].min() for d in all_data)
+        y_max = max(d['delta'].max() for d in all_data)
         # 添加5%的边距
         y_margin = (y_max - y_min) * 0.05
         y_lim = (y_min - y_margin, y_max + y_margin)
@@ -505,9 +543,9 @@ def main():
     output_file_68 = output_dir / 'Air68_lindemann.png'
     # 隐藏X轴时不使用tight，保持原始比例
     if args.hide_x_label:
-        fig_68.savefig(output_file_68, dpi=args.dpi)
+        fig_68.savefig(output_file_68, dpi=args.dpi, transparent=args.transparent)
     else:
-        fig_68.savefig(output_file_68, dpi=args.dpi, bbox_inches='tight')
+        fig_68.savefig(output_file_68, dpi=args.dpi, bbox_inches='tight', transparent=args.transparent)
     plt.close(fig_68)
     print(f"  ✓ 已保存: {output_file_68}")
     
@@ -525,13 +563,35 @@ def main():
     output_file_86 = output_dir / 'Air86_lindemann.png'
     # 隐藏X轴时不使用tight，保持原始比例
     if args.hide_x_label:
-        fig_86.savefig(output_file_86, dpi=args.dpi)
+        fig_86.savefig(output_file_86, dpi=args.dpi, transparent=args.transparent)
     else:
-        fig_86.savefig(output_file_86, dpi=args.dpi, bbox_inches='tight')
+        fig_86.savefig(output_file_86, dpi=args.dpi, bbox_inches='tight', transparent=args.transparent)
     plt.close(fig_86)
     print(f"  ✓ 已保存: {output_file_86}")
     
-    print("\n✅ 完成! 已生成两个独立的图片文件。")
+    # ==================== 绘制 sup86 (可选) ====================
+    if args.add_sup86 and data_sup86 is not None:
+        print(f"\n>>> 绘制 sup86 图片...")
+        fig_sup86 = plot_lindemann_single_fig(data_sup86, "sup86 (Pt$_8$Sn$_6$/support)", 
+                                            figsize=figsize, dpi=args.dpi,
+                                            y_ticks=y_ticks, x_ticks=x_ticks, x_nticks=x_nticks,
+                                            custom_partitions=partitions_sup86,
+                                            show_average_line=args.show_average_line,
+                                            show_error_bars=args.show_error_bars,
+                                            y_lim=y_lim,
+                                            hide_x_label=args.hide_x_label)
+        
+        output_file_sup86 = output_dir / 'sup86_lindemann.png'
+        # 隐藏X轴时不使用tight，保持原始比例
+        if args.hide_x_label:
+            fig_sup86.savefig(output_file_sup86, dpi=args.dpi, transparent=args.transparent)
+        else:
+            fig_sup86.savefig(output_file_sup86, dpi=args.dpi, bbox_inches='tight', transparent=args.transparent)
+        plt.close(fig_sup86)
+        print(f"  ✓ 已保存: {output_file_sup86}")
+    
+    num_systems = 2 if not args.add_sup86 else 3
+    print(f"\n✅ 完成! 已生成 {num_systems} 个独立的图片文件。")
     
     return 0
 

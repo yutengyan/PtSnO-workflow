@@ -112,6 +112,15 @@ python step6_1_clustering_analysis.py --structure pt6sn8 --auto-partition --use-
 # 6. 批量分析所有结构
 python step6_1_clustering_analysis.py --structure all --auto-partition --use-energy
 
+# 7. 温度筛选 (只分析特定温度点)
+python step6_1_clustering_analysis.py --structure pt6sn8 --n-partitions 2 --temp-filter "200,300,1100"
+
+# 8. 温度范围筛选 (200K, 300-500K范围内所有点, 1100K)
+python step6_1_clustering_analysis.py --structure pt6sn8 --n-partitions 2 --temp-filter "200,300-500,1100"
+
+# 9. 组合使用: 温度筛选 + 能量特征 + D值特征
+python step6_1_clustering_analysis.py --structure pt6sn8 --n-partitions 2 --use-energy --use-d-value --temp-filter "200,300-1100"
+
 ================================================================================
 """
 
@@ -286,12 +295,98 @@ def extract_main_signature_from_match_key(match_key):
     return match_key.lower() if match_key else None
 
 
-def load_data(load_d_values=False):
+def parse_temp_filter(temp_filter_str):
+    """
+    解析温度筛选参数
+    
+    支持格式:
+    - 单个温度: "200"
+    - 多个温度: "200,300,1100"
+    - 范围: "200-500" (包括200和500以及之间所有温度)
+    - 混合: "200,300-500,1100" (200, 300-500范围内所有, 1100)
+    
+    Args:
+        temp_filter_str: 温度筛选字符串
+    
+    Returns:
+        set: 温度集合 (整数)
+    """
+    if not temp_filter_str:
+        return None
+    
+    temps = set()
+    parts = temp_filter_str.split(',')
+    
+    for part in parts:
+        part = part.strip()
+        if '-' in part:
+            # 范围格式
+            try:
+                start, end = part.split('-')
+                start = int(start.strip())
+                end = int(end.strip())
+                # 添加范围内所有温度（假设步长可以从数据中推断，这里先添加端点）
+                # 实际会在应用时匹配数据中存在的温度
+                temps.add(start)
+                temps.add(end)
+                # 添加一个标记表示这是范围
+                for t in range(start, end + 1):
+                    temps.add(t)
+            except ValueError:
+                print(f"  [WARNING] 无法解析温度范围: {part}")
+        else:
+            # 单个温度
+            try:
+                temps.add(int(part))
+            except ValueError:
+                print(f"  [WARNING] 无法解析温度: {part}")
+    
+    return temps
+
+
+def apply_temp_filter(df, temp_filter_str):
+    """
+    应用温度筛选
+    
+    Args:
+        df: 数据框
+        temp_filter_str: 温度筛选字符串
+    
+    Returns:
+        DataFrame: 筛选后的数据框
+    """
+    if not temp_filter_str:
+        return df
+    
+    temps = parse_temp_filter(temp_filter_str)
+    if not temps:
+        return df
+    
+    print(f"\n  [+] 应用温度筛选: {temp_filter_str}")
+    print(f"      解析得到 {len(temps)} 个温度点")
+    
+    # 筛选数据
+    df_filtered = df[df['temp'].isin(temps)].copy()
+    
+    print(f"      筛选前: {len(df)} 条记录")
+    print(f"      筛选后: {len(df_filtered)} 条记录")
+    
+    if len(df_filtered) == 0:
+        print(f"      [WARNING] 筛选后无数据！请检查温度参数")
+        print(f"      可用温度: {sorted(df['temp'].unique())}")
+    else:
+        print(f"      保留温度: {sorted(df_filtered['temp'].unique())}")
+    
+    return df_filtered
+
+
+def load_data(load_d_values=False, d_value_file_path=None):
     """
     加载Step 7.4的输出数据,可选合并D值
     
     Args:
         load_d_values: 是否加载并合并扩散系数D值数据
+        d_value_file_path: 手动指定的D值文件路径 (优先级最高)
     
     Returns:
         DataFrame: 包含温度、能量、Lindemann-δ等特征,可选D值
@@ -330,11 +425,30 @@ def load_data(load_d_values=False):
     
     # 可选: 合并D值数据 (使用路径签名匹配)
     if load_d_values:
-        # 优先使用 all_runs_D_values.csv (有filepath)
-        D_VALUE_FILE_WITH_PATH = BASE_DIR / 'results' / 'all_runs_D_values.csv'
+        # 优先级1: 手动指定的D值文件路径
+        if d_value_file_path:
+            D_VALUE_FILE_WITH_PATH = Path(d_value_file_path)
+            if not D_VALUE_FILE_WITH_PATH.is_absolute():
+                D_VALUE_FILE_WITH_PATH = BASE_DIR / d_value_file_path
+            print(f"\n  [+] 使用手动指定的D值文件...")
+            print(f"      路径: {D_VALUE_FILE_WITH_PATH}")
+        else:
+            # 优先级2: 根据主数据签名自动检测数据源
+            # 检查主数据的match_key前缀来判断是50K数据还是旧数据
+            sample_keys = df['match_key'].head(10).tolist()
+            is_50k_data = any('sup-68-50k' in key.lower() or 'for-4-times' in key.lower() for key in sample_keys)
+            
+            if is_50k_data:
+                # 50K数据优先使用50K目录下的D值文件
+                D_VALUE_FILE_WITH_PATH = BASE_DIR / 'data' / 'for-more-50K' / 'all_runs_D_values.csv'
+                print(f"\n  [+] 检测到50K数据源,使用对应D值文件...")
+            else:
+                # 旧数据使用results目录下的D值文件
+                D_VALUE_FILE_WITH_PATH = BASE_DIR / 'results' / 'all_runs_D_values.csv'
+                print(f"\n  [+] 检测到默认数据源,使用对应D值文件...")
+            print(f"      D值文件: {D_VALUE_FILE_WITH_PATH.name}")
         
         if D_VALUE_FILE_WITH_PATH.exists():
-            print(f"\n  [+] 加载D值数据 (路径签名匹配)...")
             df_D = pd.read_csv(D_VALUE_FILE_WITH_PATH, encoding='utf-8')
             print(f"      原始D值记录: {len(df_D)}")
             
@@ -389,29 +503,9 @@ def load_data(load_d_values=False):
             
             # 清理临时列
             df.drop(columns=['main_signature'], inplace=True, errors='ignore')
-            
-        elif D_VALUE_FILE.exists():
-            # 回退到旧的ensemble数据 (按温度匹配,不推荐)
-            print(f"\n  [+] 加载D值数据 (回退: 按温度匹配,不推荐)...")
-            print(f"      [WARNING] 未找到 all_runs_D_values.csv,使用 ensemble_analysis_results.csv")
-            print(f"      [WARNING] 按温度取中位数可能导致不同体系使用相同D值!")
-            
-            df_D = pd.read_csv(D_VALUE_FILE, encoding='utf-8')
-            df_D_pt = df_D[df_D['element'] == 'Pt'].copy()
-            df_D_pt.rename(columns={'D_ensemble': 'D_value'}, inplace=True)
-            
-            df_D_grouped = df_D_pt.groupby('temp_value').agg({
-                'D_value': 'median'
-            }).reset_index()
-            df_D_grouped.rename(columns={'temp_value': 'temp'}, inplace=True)
-            
-            df = df.merge(df_D_grouped[['temp', 'D_value']], on='temp', how='left')
-            
-            n_matched = df['D_value'].notna().sum()
-            print(f"      成功匹配D值: {n_matched}/{len(df)} ({n_matched/len(df)*100:.1f}%)")
         else:
-            print(f"  [WARNING] D值数据文件不存在")
-            print(f"  跳过D值合并,仅使用基础特征")
+            print(f"      [ERROR] D值文件不存在: {D_VALUE_FILE_WITH_PATH}")
+            print(f"      将跳过D值特征")
     
     return df
 
@@ -479,19 +573,182 @@ def determine_optimal_partitions(X, max_partitions=3):
     }
 
 # ============================================================================
+# 2.5 固定Lindemann阈值分区法
+# ============================================================================
+
+def perform_lindemann_threshold_partition(df_structure, structure_name, n_partitions=2,
+                                         threshold1=0.1, threshold2=0.15):
+    """
+    使用固定Lindemann阈值进行分区 (非机器学习方法)
+    
+    Args:
+        df_structure: 数据DataFrame
+        structure_name: 结构名称
+        n_partitions: 分区数 (2或3)
+        threshold1: 第一个阈值 (默认0.1)
+        threshold2: 第二个阈值 (默认0.15, 仅3分区时使用)
+    
+    Returns:
+        dict: 分区结果
+    """
+    print(f"\n  使用固定Lindemann阈值分区法:")
+    
+    if 'delta' not in df_structure.columns:
+        print(f"  [ERROR] 数据中缺少'delta'列,无法使用Lindemann阈值分区!")
+        return None
+    
+    df_clustered = df_structure.copy()
+    
+    if n_partitions == 2:
+        # 两分区: δ < threshold1 → 分区0 (固相), δ >= threshold1 → 分区1 (液相)
+        print(f"    两分区阈值: δ = {threshold1:.3f}")
+        print(f"      分区0 (固相): δ < {threshold1:.3f}")
+        print(f"      分区1 (液相): δ ≥ {threshold1:.3f}")
+        
+        df_clustered['cluster'] = df_clustered['delta'].apply(
+            lambda x: 0 if x < threshold1 else 1
+        )
+        
+    elif n_partitions == 3:
+        # 三分区: δ < threshold1 → 0, threshold1 <= δ < threshold2 → 1, δ >= threshold2 → 2
+        print(f"    三分区阈值: δ1 = {threshold1:.3f}, δ2 = {threshold2:.3f}")
+        print(f"      分区0 (固相):     δ < {threshold1:.3f}")
+        print(f"      分区1 (预熔化):   {threshold1:.3f} ≤ δ < {threshold2:.3f}")
+        print(f"      分区2 (液相):     δ ≥ {threshold2:.3f}")
+        
+        def classify_delta(x):
+            if x < threshold1:
+                return 0
+            elif x < threshold2:
+                return 1
+            else:
+                return 2
+        
+        df_clustered['cluster'] = df_clustered['delta'].apply(classify_delta)
+    
+    else:
+        print(f"  [ERROR] 不支持的分区数: {n_partitions} (仅支持2或3)")
+        return None
+    
+    # 统计每个分区的数据点
+    print(f"\n  分区统计:")
+    for cluster_id in sorted(df_clustered['cluster'].unique()):
+        cluster_data = df_clustered[df_clustered['cluster'] == cluster_id]
+        n_points = len(cluster_data)
+        pct = n_points / len(df_clustered) * 100
+        
+        delta_min = cluster_data['delta'].min()
+        delta_max = cluster_data['delta'].max()
+        delta_mean = cluster_data['delta'].mean()
+        
+        temp_min = cluster_data['temp'].min()
+        temp_max = cluster_data['temp'].max()
+        
+        phase_names = {0: '固相', 1: '预熔化' if n_partitions == 3 else '液相', 2: '液相'}
+        phase_name = phase_names.get(cluster_id, f'分区{cluster_id}')
+        
+        print(f"    分区{cluster_id} ({phase_name}): {n_points:3d}点 ({pct:5.1f}%)")
+        print(f"      温度范围:  {temp_min:.0f} - {temp_max:.0f} K")
+        print(f"      δ范围:     {delta_min:.4f} - {delta_max:.4f} (平均: {delta_mean:.4f})")
+    
+    # 计算简化的质量指标 (基于温度和delta的分布)
+    # 对于固定阈值法,不计算Silhouette等指标 (因为不是基于特征空间聚类)
+    silhouette = None
+    calinski = None
+    davies_bouldin = None
+    
+    print(f"\n  [NOTE] 固定阈值法不计算聚类质量指标 (Silhouette等)")
+    print(f"        质量取决于阈值选择是否符合物理相变温度")
+    
+    # 分析每个分区的Lindemann指数分布
+    cluster_stats = []
+    phase_labels_map = {
+        0: 'partition1' if n_partitions == 2 else 'solid',
+        1: 'partition2' if n_partitions == 2 else 'premelting',
+        2: 'liquid'
+    }
+    
+    for cluster_id in sorted(df_clustered['cluster'].unique()):
+        cluster_data = df_clustered[df_clustered['cluster'] == cluster_id]
+        
+        stats = {
+            'cluster': cluster_id,
+            'cluster_id': cluster_id,  # 兼容绘图函数
+            'label': phase_labels_map.get(cluster_id, f'partition{cluster_id+1}'),
+            'n_points': len(cluster_data),
+            'temp_min': cluster_data['temp'].min(),
+            'temp_max': cluster_data['temp'].max(),
+            'temp_mean': cluster_data['temp'].mean(),
+            'delta_min': cluster_data['delta'].min(),
+            'delta_max': cluster_data['delta'].max(),
+            'delta_mean': cluster_data['delta'].mean(),
+            'delta_std': cluster_data['delta'].std(),
+        }
+        cluster_stats.append(stats)
+    
+    # 根据Lindemann平均值排序 (固相δ小 → 液相δ大)
+    cluster_stats_sorted = sorted(cluster_stats, key=lambda x: x['delta_mean'])
+    
+    # 重新映射cluster标签: 按δ从小到大排序
+    cluster_mapping = {}
+    for new_id, stat in enumerate(cluster_stats_sorted):
+        old_id = stat['cluster']
+        cluster_mapping[old_id] = new_id
+    
+    df_clustered['cluster'] = df_clustered['cluster'].map(cluster_mapping)
+    
+    # 更新cluster_stats中的cluster id
+    for stat, new_id in zip(cluster_stats_sorted, range(len(cluster_stats_sorted))):
+        stat['cluster'] = new_id
+        stat['cluster_id'] = new_id  # 也更新cluster_id
+    
+    # 生成phase_clustered列 (用于后续热容计算)
+    phase_map = {
+        0: 'partition1',
+        1: 'partition2' if n_partitions == 2 else 'partition2',
+        2: 'partition3'
+    }
+    df_clustered['phase_clustered'] = df_clustered['cluster'].map(phase_map)
+    
+    # 创建cluster_to_phase映射 (用于绘图)
+    cluster_to_phase = phase_map.copy()
+    
+    # 返回结果
+    result = {
+        'structure': structure_name,
+        'method': 'lindemann-threshold',
+        'n_partitions': n_partitions,
+        'threshold1': threshold1,
+        'threshold2': threshold2 if n_partitions == 3 else None,
+        'thresholds': [threshold1, threshold2] if n_partitions == 3 else [threshold1],  # 兼容绘图函数
+        'df_clustered': df_clustered,
+        'cluster_stats': cluster_stats_sorted,
+        'cluster_to_phase': cluster_to_phase,  # 添加cluster到phase的映射
+        'k_analysis': None,  # 固定阈值法不需要K值分析
+        'metrics': {
+            'silhouette': silhouette,
+            'calinski': calinski,
+            'davies_bouldin': davies_bouldin
+        }
+    }
+    
+    return result
+
+# ============================================================================
 # 3. 聚类分析核心函数
 # ============================================================================
 
 def perform_clustering(df_structure, structure_name, method='kmeans', n_partitions=2, 
                        auto_partition=False, eps=0.3, min_samples=5, 
-                       use_energy=False, use_msd=False, use_d_value=False):
+                       use_energy=False, use_msd=False, use_d_value=False,
+                       lindemann_threshold=0.1, lindemann_threshold2=0.15):
     """
     执行相态分区分析
     
     Args:
         df_structure: 单个结构的数据
         structure_name: 结构名称
-        method: 聚类方法 ('kmeans', 'hierarchical', 'dbscan')
+        method: 聚类方法 ('kmeans', 'hierarchical', 'dbscan', 'lindemann-threshold')
         n_partitions: 分区数量 (1-3,基于物理意义)
         auto_partition: 是否自动确定分区数
         eps: DBSCAN的epsilon参数
@@ -499,6 +756,8 @@ def perform_clustering(df_structure, structure_name, method='kmeans', n_partitio
         use_energy: 是否加入能量特征
         use_msd: 是否加入MSD特征
         use_d_value: 是否加入扩散系数D值特征
+        lindemann_threshold: 固定Lindemann阈值 (仅method='lindemann-threshold'时有效)
+        lindemann_threshold2: 第二个阈值 (三分区时使用)
     
     Returns:
         dict: 聚类结果
@@ -511,6 +770,13 @@ def perform_clustering(df_structure, structure_name, method='kmeans', n_partitio
     if len(df_structure) < 10:
         print(f"  [WARNING] 数据点太少 ({len(df_structure)} < 10), 跳过!")
         return None
+    
+    # 特殊处理: 固定Lindemann阈值分区法
+    if method == 'lindemann-threshold':
+        return perform_lindemann_threshold_partition(
+            df_structure, structure_name, n_partitions,
+            lindemann_threshold, lindemann_threshold2
+        )
     
     # 准备特征: 基础特征(温度, Lindemann指数) + 可选特征(能量, MSD, D值)
     feature_cols = ['temp', 'delta']
@@ -2908,22 +3174,38 @@ def main():
         epilog="""
 示例用法:
   # 单个结构分析
-  python step7_4_2_clustering_analysis.py --structure pt6sn8
+  python step6_1_clustering_analysis.py --structure pt6sn8
   
   # 多个结构分析
-  python step7_4_2_clustering_analysis.py --structure pt6sn8,pt8sn8-1-best
+  python step6_1_clustering_analysis.py --structure pt6sn8,pt8sn8-1-best
   
   # 分析所有结构
-  python step7_4_2_clustering_analysis.py --structure all
+  python step6_1_clustering_analysis.py --structure all
   
   # 使用层次聚类
-  python step7_4_2_clustering_analysis.py --structure pt6sn8 --method hierarchical
+  python step6_1_clustering_analysis.py --structure pt6sn8 --method hierarchical
   
   # 自动确定K值
-  python step7_4_2_clustering_analysis.py --structure pt6sn8 --auto-k
+  python step6_1_clustering_analysis.py --structure pt6sn8 --auto-partition
+  
+  # 固定Lindemann阈值分区法（新增）
+  python step6_1_clustering_analysis.py --structure Pt8sn6 --method lindemann-threshold --lindemann-threshold 0.1
+  python step6_1_clustering_analysis.py --structure Pt8sn6 --method lindemann-threshold --n-partitions 3 --lindemann-threshold 0.1 --lindemann-threshold2 0.15
+  
+  # 温度筛选 (只分析特定温度点)
+  python step6_1_clustering_analysis.py --structure pt6sn8 --n-partitions 2 --temp-filter "200,300,1100"
+  
+  # 温度范围筛选
+  python step6_1_clustering_analysis.py --structure pt6sn8 --temp-filter "200,300-500,1100"
+  
+  # 手动指定D值文件
+  python step6_1_clustering_analysis.py --structure pt6sn8 --use-d-value --d-value-file "data/for-more-50K/all_runs_D_values.csv"
+  
+  # 组合使用
+  python step6_1_clustering_analysis.py --structure pt6sn8 --n-partitions 2 --use-energy --use-d-value --temp-filter "200,300-1100"
   
   # 使用DBSCAN
-  python step7_4_2_clustering_analysis.py --structure pt6sn8 --method dbscan --eps 0.3
+  python step6_1_clustering_analysis.py --structure pt6sn8 --method dbscan --eps 0.3
         """
     )
     
@@ -2938,8 +3220,9 @@ def main():
         '--method', '-m',
         type=str,
         default='kmeans',
-        choices=['kmeans', 'hierarchical', 'dbscan'],
-        help='聚类方法 (默认: kmeans)'
+        choices=['kmeans', 'hierarchical', 'dbscan', 'lindemann-threshold'],
+        help='聚类方法: kmeans=K均值聚类, hierarchical=层次聚类, dbscan=密度聚类, '
+             'lindemann-threshold=固定Lindemann阈值分区 (默认: kmeans)'
     )
     
     parser.add_argument(
@@ -2985,7 +3268,14 @@ def main():
     parser.add_argument(
         '--use-d-value',
         action='store_true',
-        help='加入扩散系数D值特征进行聚类 (来自ensemble_analysis_results.csv)'
+        help='加入扩散系数D值特征进行聚类 (自动检测数据源或使用--d-value-file指定)'
+    )
+    
+    parser.add_argument(
+        '--d-value-file',
+        type=str,
+        default=None,
+        help='手动指定D值文件路径 (例如: data/for-more-50K/all_runs_D_values.csv)'
     )
     
     parser.add_argument(
@@ -2994,12 +3284,43 @@ def main():
         help='对比所有聚类算法(KMeans, Hierarchical, DBSCAN)并自动选择最优算法'
     )
     
+    parser.add_argument(
+        '--temp-filter',
+        type=str,
+        default=None,
+        help='温度筛选: 指定要包含的温度点(K),多个用逗号分隔,也支持范围如"200,300-500,1100"'
+    )
+    
+    parser.add_argument(
+        '--lindemann-threshold',
+        type=float,
+        default=0.1,
+        help='固定Lindemann阈值 (仅当 --method=lindemann-threshold 时有效, 默认: 0.1)\n'
+             '两分区: δ<阈值→固相, δ≥阈值→液相\n'
+             '三分区: 需指定 --lindemann-threshold2 作为第二个阈值'
+    )
+    
+    parser.add_argument(
+        '--lindemann-threshold2',
+        type=float,
+        default=0.15,
+        help='第二个Lindemann阈值,用于三分区 (仅当 --method=lindemann-threshold 且 --n-partitions=3 时有效, 默认: 0.15)\n'
+             '三分区: δ<阈值1→固相, 阈值1≤δ<阈值2→预熔化, δ≥阈值2→液相'
+    )
+    
     args = parser.parse_args()
     
     # 加载数据 (如果使用D值,自动合并)
-    df = load_data(load_d_values=args.use_d_value)
+    df = load_data(load_d_values=args.use_d_value, d_value_file_path=args.d_value_file)
     if df is None:
         return
+    
+    # 应用温度筛选
+    if args.temp_filter:
+        df = apply_temp_filter(df, args.temp_filter)
+        if len(df) == 0:
+            print("\n[ERROR] 温度筛选后无数据,退出!")
+            return
     
     # 确定要分析的结构列表
     if args.structure.lower() == 'all':
@@ -3099,7 +3420,9 @@ def main():
                 min_samples=args.min_samples,
                 use_energy=args.use_energy,
                 use_msd=args.use_msd,
-                use_d_value=args.use_d_value
+                use_d_value=args.use_d_value,
+                lindemann_threshold=args.lindemann_threshold,
+                lindemann_threshold2=args.lindemann_threshold2
             )
         
         if results:

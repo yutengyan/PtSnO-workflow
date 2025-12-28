@@ -75,7 +75,7 @@ DATA_SOURCE_CONFIGS = {
     },
     '50K': {
         'dirs': [
-            BASE_DIR / 'data' / 'for-more-50K' / 'gmx_msd_results_20251208_192450',
+            BASE_DIR / 'data' / 'for-more-50K' / 'gmx_msd_results_20251226_170510',
         ],
         'output_dir': BASE_DIR / 'data' / 'for-more-50K',
         'description': '50K温度间隔数据集',

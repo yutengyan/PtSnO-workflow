@@ -394,15 +394,93 @@ def determine_partitions_by_lindemann(df, threshold=0.1):
     return custom_partitions, temp_to_partition
 
 
-def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None, custom_partitions=None, peak_method='fit', remove_outliers=False, outlier_iqr=1.5):
+def calculate_transition_cv(df, temp_to_partition, phase_fits, temps_unique, E_cluster_mean_rel,
+                            T_left, T_right, partition_left, partition_right,
+                            peak_method, is_air_system, slope_support, intercept_support, E_cluster_ref, E_cluster_mean):
+    """
+    计算两个分区边界的过渡热容
+    
+    参数:
+        df: 原始数据DataFrame
+        temp_to_partition: 温度到分区的映射字典
+        phase_fits: 各分区的拟合参数字典
+        temps_unique: 唯一温度数组
+        E_cluster_mean_rel: 相对能量数组
+        T_left: 左边界温度 (当前分区最后一个温度)
+        T_right: 右边界温度 (下一分区第一个温度)
+        partition_left: 左分区名称
+        partition_right: 右分区名称
+        peak_method: 计算方法 ('data', 'partition', 'fit')
+        is_air_system: 是否为Air系列
+        slope_support: 载体能量斜率
+        intercept_support: 载体能量截距
+        E_cluster_ref: 团簇能量参考值
+        E_cluster_mean: 团簇平均能量数组
+        
+    返回:
+        dict: {
+            'Cv_data': 全点法热容,
+            'Cv_partition': 分区点法热容,
+            'Cv_fit': 拟合线法热容
+        }
+    """
+    result = {}
+    
+    # ========== 方法1: 实际数据点的数值微分 ==========
+    idx_left = np.where(temps_unique == T_left)[0]
+    idx_right = np.where(temps_unique == T_right)[0]
+    if len(idx_left) > 0 and len(idx_right) > 0:
+        E_left_data = E_cluster_mean_rel[idx_left[0]]
+        E_right_data = E_cluster_mean_rel[idx_right[0]]
+        result['Cv_data'] = (E_right_data - E_left_data) / (T_right - T_left) * 1000  # meV/K
+    else:
+        Cv_left = phase_fits[partition_left]['Cv']
+        Cv_right = phase_fits[partition_right]['Cv']
+        result['Cv_data'] = (Cv_left + Cv_right) / 2
+    
+    # ========== 方法2: 只用归属于该分区的点的能量 ==========
+    df_T_left = df[df['temp'] == T_left]
+    df_T_right = df[df['temp'] == T_right]
+    
+    df_T_left_filtered = df_T_left[df_T_left['phase_clustered'] == partition_left]
+    df_T_right_filtered = df_T_right[df_T_right['phase_clustered'] == partition_right]
+    
+    if len(df_T_left_filtered) > 0 and len(df_T_right_filtered) > 0:
+        if is_air_system:
+            E_left_partition = df_T_left_filtered['avg_energy'].mean()
+            E_right_partition = df_T_right_filtered['avg_energy'].mean()
+        else:
+            E_support_T_left = slope_support * T_left + intercept_support
+            E_support_T_right = slope_support * T_right + intercept_support
+            E_left_partition = df_T_left_filtered['avg_energy'].mean() - E_support_T_left
+            E_right_partition = df_T_right_filtered['avg_energy'].mean() - E_support_T_right
+        
+        result['Cv_partition'] = (E_right_partition - E_left_partition) / (T_right - T_left) * 1000
+    else:
+        result['Cv_partition'] = result['Cv_data']
+    
+    # ========== 方法3: 拟合线外推的能量差 ==========
+    fit_left = phase_fits[partition_left]
+    fit_right = phase_fits[partition_right]
+    E_left_fit = fit_left['slope'] * T_left + fit_left['intercept']
+    E_right_fit = fit_right['slope'] * T_right + fit_right['intercept']
+    result['Cv_fit'] = (E_right_fit - E_left_fit) / (T_right - T_left) * 1000  # meV/K
+    
+    return result
+
+
+def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None, custom_partitions=None, peak_method='fit', remove_outliers=False, outlier_iqr=1.5, scatter_fit=False):
     """
     绘制分区热容拟合图（论文出图专用）
     
     核心逻辑：
-    1. 按温度分组计算团簇能量平均值和标准差
+    1. 按温度分组计算团簇能量平均值和标准差（或直接使用散点）
     2. 使用多数投票规则将每个温度分配给唯一的相态（或使用自定义分区）
     3. 对每个相态的专属温度点进行线性拟合
     4. 绘制整体拟合线 vs 分区拟合线对比
+    
+    参数：
+        scatter_fit: bool, 是否对散点直接拟合（而不是先求平均值）
     
     tick_params: 刻度参数字典
         - y_ticks_custom: 自定义Y轴刻度列表
@@ -592,6 +670,14 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     E_cluster_ref = E_cluster_mean.min()
     E_cluster_mean_rel = E_cluster_mean - E_cluster_ref
     
+    # 为散点模式添加energy_cluster_rel列到df
+    # 计算每行的energy_cluster相对值
+    if is_air_system:
+        df['energy_cluster'] = df['avg_energy'].copy()
+    else:
+        df['energy_cluster'] = df['avg_energy'] - (slope_support * df['temp'] + intercept_support)
+    df['energy_cluster_rel'] = df['energy_cluster'] - E_cluster_ref
+    
     # ========== 2. 确定每个温度的分区 ==========
     temp_to_partition = {}
     
@@ -637,8 +723,17 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         print(f"  错误: 温度点不足 ({len(temps_unique)} < 3)")
         return None
     
-    slope_overall, intercept_overall, r_value_overall, _, std_err_overall = linregress(
-        temps_unique, E_cluster_mean_rel)
+    if scatter_fit:
+        # 散点拟合:直接对所有散点进行拟合
+        print(f"\n  [散点拟合模式] 直接对{len(df)}个散点进行拟合（不求平均）")
+        T_all = df['temp'].values
+        E_all = df['energy_cluster_rel'].values
+        slope_overall, intercept_overall, r_value_overall, _, std_err_overall = linregress(T_all, E_all)
+    else:
+        # 平均值拟合:先求平均值再拟合
+        slope_overall, intercept_overall, r_value_overall, _, std_err_overall = linregress(
+            temps_unique, E_cluster_mean_rel)
+    
     R2_overall = r_value_overall ** 2
     Cv_overall = slope_overall * 1000  # meV/K
     Cv_overall_err = std_err_overall * 1000
@@ -646,7 +741,14 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     print(f"\n  整体拟合: Cv={Cv_overall:.4f}±{Cv_overall_err:.4f} meV/K, R2={R2_overall:.4f}")
     
     # ========== 4. 分区拟合 ==========
-    phases = df['phase_clustered'].unique()
+    # 根据temp_to_partition确定实际使用的分区
+    if custom_partitions is not None:
+        # 使用自定义分区,从temp_to_partition提取实际分区
+        phases = sorted(set(temp_to_partition.values()), key=lambda x: int(x.replace('partition', '')))
+    else:
+        # 使用聚类结果的分区
+        phases = df['phase_clustered'].unique()
+    
     phase_fits = {}
     
     for phase in phases:
@@ -654,12 +756,30 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         phase_temps = sorted(phase_temps)
         
         if len(phase_temps) >= 2:
-            mask = np.isin(temps_unique, phase_temps)
-            T_phase = temps_unique[mask]
-            E_phase_rel = E_cluster_mean_rel[mask]
-            E_phase_std = E_cluster_std[mask]
+            if scatter_fit:
+                # 散点拟合:获取该分区的所有散点
+                df_phase = df[df['temp'].isin(phase_temps)]
+                T_phase_scatter = df_phase['temp'].values
+                E_phase_scatter = df_phase['energy_cluster_rel'].values
+                
+                slope_ph, intercept_ph, r_value_ph, _, std_err_ph = linregress(T_phase_scatter, E_phase_scatter)
+                
+                # 仍然需要平均值用于绘图
+                mask = np.isin(temps_unique, phase_temps)
+                T_phase = temps_unique[mask]
+                E_phase_rel = E_cluster_mean_rel[mask]
+                E_phase_std = E_cluster_std[mask]
+                
+                print(f"  [散点拟合] {phase}: {len(T_phase_scatter)}个散点")
+            else:
+                # 平均值拟合
+                mask = np.isin(temps_unique, phase_temps)
+                T_phase = temps_unique[mask]
+                E_phase_rel = E_cluster_mean_rel[mask]
+                E_phase_std = E_cluster_std[mask]
+                
+                slope_ph, intercept_ph, r_value_ph, _, std_err_ph = linregress(T_phase, E_phase_rel)
             
-            slope_ph, intercept_ph, r_value_ph, _, std_err_ph = linregress(T_phase, E_phase_rel)
             R2_ph = r_value_ph ** 2
             Cv_ph = slope_ph * 1000
             Cv_ph_err = std_err_ph * 1000
@@ -684,11 +804,21 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     fig, ax1 = plt.subplots(figsize=figsize)
     
     # ----- 左Y轴: 能量-温度数据点（带误差棒）和拟合线 -----
-    # 绘制数据点（带误差棒）
-    ax1.errorbar(temps_unique, E_cluster_mean_rel, yerr=E_cluster_std,
-                 fmt='o', markersize=10, color='black', 
-                 ecolor='gray', elinewidth=2, capsize=4, capthick=2,
-                 zorder=5, label='Data')
+    # 绘制数据点
+    if scatter_fit:
+        # 散点模式:绘制所有原始数据点(不求平均)
+        T_all_scatter = df['temp'].values
+        E_all_scatter = df['energy_cluster_rel'].values
+        ax1.scatter(T_all_scatter, E_all_scatter, 
+                   s=50, color='black', alpha=0.6, 
+                   zorder=5, label='Scatter Data')
+        print(f"\n  [散点模式] 绘制了{len(T_all_scatter)}个原始数据点")
+    else:
+        # 平均值模式:绘制平均值（带误差棒）
+        ax1.errorbar(temps_unique, E_cluster_mean_rel, yerr=E_cluster_std,
+                     fmt='o', markersize=10, color='black', 
+                     ecolor='gray', elinewidth=2, capsize=4, capthick=2,
+                     zorder=5, label='Data')
     
     # 绘制拟合线（黑色）
     phases_sorted = sorted(phase_fits.keys())
@@ -698,26 +828,31 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         E_phase_fit = fit['slope'] * T_phase_fit + fit['intercept']
         ax1.plot(T_phase_fit, E_phase_fit, '-', color='black', linewidth=2.5, zorder=4)
     
-    # 连接两个分区之间的数据点（实线连接实际数据点，而非拟合线）
+    # 连接所有相邻分区之间的数据点（支持2分区/3分区/N分区）
     if len(phases_sorted) >= 2:
-        fit1 = phase_fits[phases_sorted[0]]
-        fit2 = phase_fits[phases_sorted[1]]
-        # 分区1的最后一个数据点
-        T1_end = fit1['T_range'][1]
-        idx1 = np.where(temps_unique == T1_end)[0]
-        if len(idx1) > 0:
-            E1_end = E_cluster_mean_rel[idx1[0]]
-        else:
-            E1_end = fit1['slope'] * T1_end + fit1['intercept']
-        # 分区2的第一个数据点
-        T2_start = fit2['T_range'][0]
-        idx2 = np.where(temps_unique == T2_start)[0]
-        if len(idx2) > 0:
-            E2_start = E_cluster_mean_rel[idx2[0]]
-        else:
-            E2_start = fit2['slope'] * T2_start + fit2['intercept']
-        # 用实线连接两个数据点
-        ax1.plot([T1_end, T2_start], [E1_end, E2_start], '-', color='black', linewidth=2.5, zorder=4)
+        for i in range(len(phases_sorted) - 1):
+            fit_current = phase_fits[phases_sorted[i]]
+            fit_next = phase_fits[phases_sorted[i+1]]
+            
+            # 当前分区的最后一个数据点
+            T_current_end = fit_current['T_range'][1]
+            idx_current = np.where(temps_unique == T_current_end)[0]
+            if len(idx_current) > 0:
+                E_current_end = E_cluster_mean_rel[idx_current[0]]
+            else:
+                E_current_end = fit_current['slope'] * T_current_end + fit_current['intercept']
+            
+            # 下一分区的第一个数据点
+            T_next_start = fit_next['T_range'][0]
+            idx_next = np.where(temps_unique == T_next_start)[0]
+            if len(idx_next) > 0:
+                E_next_start = E_cluster_mean_rel[idx_next[0]]
+            else:
+                E_next_start = fit_next['slope'] * T_next_start + fit_next['intercept']
+            
+            # 用实线连接两个数据点
+            ax1.plot([T_current_end, T_next_start], [E_current_end, E_next_start], 
+                     '-', color='black', linewidth=2.5, zorder=4)
     
     ax1.set_xlabel('Temperature (K)', fontsize=FONT_LABEL)
     ax1.set_ylabel('Total Energy (eV)', fontsize=FONT_LABEL)
@@ -735,163 +870,199 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     # ----- 右Y轴: 热容曲线 -----
     ax2 = ax1.twinx()
     
-    # 分界温度和热容值（用于导出）
-    T_boundary = None
-    Cv1 = None
-    Cv2 = None
-    Cv_peak = None
+    # 分界温度和热容值（用于导出,支持多分区）
+    boundaries = []  # 存储所有边界信息
+    Cv_list = []     # 存储所有分区的热容值
+    Cv_transitions = []  # 存储所有边界的过渡热容
+    has_peaks = []   # 存储各边界是否有峰
     
     if len(phases_sorted) >= 2:
-        # 找到分区边界温度
-        phase1_temps = [t for t, p in temp_to_partition.items() if p == phases_sorted[0]]
-        phase2_temps = [t for t, p in temp_to_partition.items() if p == phases_sorted[1]]
+        # 提取所有分区的热容值
+        Cv_list = [phase_fits[p]['Cv'] for p in phases_sorted]
         
-        if phase1_temps and phase2_temps:
-            T1_last = max(phase1_temps)   # 分区1最后一个温度
-            T2_first = min(phase2_temps)  # 分区2第一个温度
-            T_boundary = (T1_last + T2_first) / 2
-            print(f"\n  分界温度: {T_boundary:.0f} K (过渡区: {T1_last:.0f}-{T2_first:.0f}K)")
+        print(f"\n  分区数量: {len(phases_sorted)}")
+        for i, phase in enumerate(phases_sorted):
+            T_min = phase_fits[phase]['T_range'][0]
+            T_max = phase_fits[phase]['T_range'][1]
+            Cv = phase_fits[phase]['Cv']
+            print(f"    分区{i+1}: {phase} ({T_min:.0f}-{T_max:.0f}K), Cv{i+1}={Cv:.2f} meV/K")
+        
+        # 构建所有分区边界
+        for i in range(len(phases_sorted) - 1):
+            phase_current_temps = [t for t, p in temp_to_partition.items() if p == phases_sorted[i]]
+            phase_next_temps = [t for t, p in temp_to_partition.items() if p == phases_sorted[i+1]]
             
-            Cv1 = phase_fits[phases_sorted[0]]['Cv']
-            Cv2 = phase_fits[phases_sorted[1]]['Cv']
-            
-            # ========== 方法1: 实际数据点的数值微分 ==========
-            # 注意：这里使用的是按温度平均的能量（所有run的平均，不区分分区归属）
-            idx1 = np.where(temps_unique == T1_last)[0]
-            idx2 = np.where(temps_unique == T2_first)[0]
-            if len(idx1) > 0 and len(idx2) > 0:
-                E1_data = E_cluster_mean_rel[idx1[0]]
-                E2_data = E_cluster_mean_rel[idx2[0]]
-                Cv_transition_data = (E2_data - E1_data) / (T2_first - T1_last) * 1000  # meV/K
-            else:
-                Cv_transition_data = (Cv1 + Cv2) / 2
-            
-            # ========== 方法1b: 只用归属于该分区的点的能量 ==========
-            # T1_last (如650K) 被分给分区1，只用分区1的点计算能量
-            # T2_first (如700K) 被分给分区2，只用分区2的点计算能量
-            df_T1 = df[df['temp'] == T1_last]
-            df_T2 = df[df['temp'] == T2_first]
-            
-            # 获取该温度被分配到的分区
-            partition_T1 = temp_to_partition[T1_last]
-            partition_T2 = temp_to_partition[T2_first]
-            
-            # 筛选只属于该分区的点
-            df_T1_filtered = df_T1[df_T1['phase_clustered'] == partition_T1]
-            df_T2_filtered = df_T2[df_T2['phase_clustered'] == partition_T2]
-            
-            if len(df_T1_filtered) > 0 and len(df_T2_filtered) > 0:
-                if is_air_system:
-                    E1_partition = df_T1_filtered['avg_energy'].mean()
-                    E2_partition = df_T2_filtered['avg_energy'].mean()
+            if phase_current_temps and phase_next_temps:
+                T_current_last = max(phase_current_temps)
+                T_next_first = min(phase_next_temps)
+                T_boundary = (T_current_last + T_next_first) / 2
+                
+                boundary_info = {
+                    'index': i,
+                    'T_boundary': T_boundary,
+                    'T_current_last': T_current_last,
+                    'T_next_first': T_next_first,
+                    'phase_left': phases_sorted[i],
+                    'phase_right': phases_sorted[i+1],
+                    'Cv_left': Cv_list[i],
+                    'Cv_right': Cv_list[i+1]
+                }
+                boundaries.append(boundary_info)
+                
+                print(f"\n  边界{i+1}: {T_boundary:.0f} K (过渡区: {T_current_last:.0f}-{T_next_first:.0f}K)")
+                
+                # 计算该边界的过渡热容
+                cv_results = calculate_transition_cv(
+                    df, temp_to_partition, phase_fits, temps_unique, E_cluster_mean_rel,
+                    T_current_last, T_next_first, phases_sorted[i], phases_sorted[i+1],
+                    peak_method, is_air_system, slope_support, intercept_support, 
+                    E_cluster_ref, E_cluster_mean
+                )
+                
+                # 打印各方法的结果
+                df_T_left = df[df['temp'] == T_current_last]
+                df_T_right = df[df['temp'] == T_next_first]
+                df_T_left_filtered = df_T_left[df_T_left['phase_clustered'] == phases_sorted[i]]
+                df_T_right_filtered = df_T_right[df_T_right['phase_clustered'] == phases_sorted[i+1]]
+                
+                if len(df_T_left_filtered) > 0 and len(df_T_right_filtered) > 0:
+                    n_left_total = len(df_T_left)
+                    n_left_used = len(df_T_left_filtered)
+                    n_right_total = len(df_T_right)
+                    n_right_used = len(df_T_right_filtered)
+                    print(f"    分区点法: T_left={T_current_last}K 用{n_left_used}/{n_left_total}点({phases_sorted[i]}), "
+                          f"T_right={T_next_first}K 用{n_right_used}/{n_right_total}点({phases_sorted[i+1]})")
+                
+                print(f"  边界{i+1}热容峰计算方法: {peak_method}")
+                print(f"    全点法(data): Cv={cv_results['Cv_data']:.2f} meV/K (所有点平均)")
+                print(f"    分区法(partition): Cv={cv_results['Cv_partition']:.2f} meV/K (只用分区内点)")
+                print(f"    拟合法(fit): Cv={cv_results['Cv_fit']:.2f} meV/K (拟合线外推)")
+                print(f"    Cv{i+1}={Cv_list[i]:.2f}, Cv{i+2}={Cv_list[i+1]:.2f} meV/K")
+                
+                # 根据选择的方法确定过渡热容
+                if peak_method == 'data':
+                    Cv_trans = cv_results['Cv_data']
+                    method_name = "全点数据法"
+                elif peak_method == 'partition':
+                    Cv_trans = cv_results['Cv_partition']
+                    method_name = "分区点法"
+                else:  # 'fit'
+                    Cv_trans = cv_results['Cv_fit']
+                    method_name = "拟合线外推法"
+                
+                Cv_transitions.append(Cv_trans)
+                boundary_info['Cv_trans'] = Cv_trans
+                boundary_info['method_name'] = method_name
+                
+                # 判断是否存在热容峰
+                has_peak = Cv_trans > max(Cv_list[i], Cv_list[i+1])
+                has_peaks.append(has_peak)
+                boundary_info['has_peak'] = has_peak
+                
+                if has_peak:
+                    print(f"  ★ 边界{i+1}存在热容峰: Cv_peak={Cv_trans:.2f} meV/K ({method_name})")
                 else:
-                    E_support_T1 = slope_support * T1_last + intercept_support
-                    E_support_T2 = slope_support * T2_first + intercept_support
-                    E1_partition = df_T1_filtered['avg_energy'].mean() - E_support_T1
-                    E2_partition = df_T2_filtered['avg_energy'].mean() - E_support_T2
-                
-                # 转换为相对能量
-                E1_partition_rel = E1_partition - E_cluster_ref - (E_cluster_mean[0] - E_cluster_ref)
-                E2_partition_rel = E2_partition - E_cluster_ref - (E_cluster_mean[0] - E_cluster_ref)
-                
-                # 直接用绝对能量差计算
-                Cv_transition_partition = (E2_partition - E1_partition) / (T2_first - T1_last) * 1000
-                
-                n_T1_total = len(df_T1)
-                n_T1_used = len(df_T1_filtered)
-                n_T2_total = len(df_T2)
-                n_T2_used = len(df_T2_filtered)
-                print(f"    分区点法: T1={T1_last}K 用{n_T1_used}/{n_T1_total}点({partition_T1}), "
-                      f"T2={T2_first}K 用{n_T2_used}/{n_T2_total}点({partition_T2})")
-                print(f"    分区点法: Cv_transition={Cv_transition_partition:.2f} meV/K")
+                    print(f"  边界{i+1}无峰 (Cv_trans={Cv_trans:.2f} ≤ max(Cv{i+1}={Cv_list[i]:.2f}, Cv{i+2}={Cv_list[i+1]:.2f}))")
+        
+        # 打印最终热容曲线摘要
+        cv_summary = f"Cv1={Cv_list[0]:.2f}"
+        for i, boundary in enumerate(boundaries):
+            if boundary['has_peak']:
+                cv_summary += f" → Cv_peak{i+1}={boundary['Cv_trans']:.2f}"
             else:
-                Cv_transition_partition = Cv_transition_data
-                print(f"    分区点法: 数据不足，回退到全部数据点")
+                cv_summary += " → [阶梯]"
+            cv_summary += f" → Cv{i+2}={Cv_list[i+1]:.2f}"
+        print(f"\n  最终热容曲线: {cv_summary} meV/K")
+        
+        # ========== 绘制热容曲线（分区直线+过渡区局部平滑）==========
+        T_plot = []
+        Cv_plot = []
+        
+        # 起点到第一个边界前 - 直线
+        T_plot.append(temps_unique.min())
+        Cv_plot.append(Cv_list[0])
+        
+        for i, boundary in enumerate(boundaries):
+            T_left = boundary['T_current_last']
+            T_right = boundary['T_next_first']
+            T_boundary = boundary['T_boundary']
             
-            # ========== 方法2: 拟合线外推的能量差 ==========
-            # E1_fit: 用分区1拟合线代入T1_last
-            # E2_fit: 用分区2拟合线代入T2_first
-            fit1 = phase_fits[phases_sorted[0]]
-            fit2 = phase_fits[phases_sorted[1]]
-            E1_fit = fit1['slope'] * T1_last + fit1['intercept']
-            E2_fit = fit2['slope'] * T2_first + fit2['intercept']
-            Cv_transition_fit = (E2_fit - E1_fit) / (T2_first - T1_last) * 1000  # meV/K
+            # 左端点(到达过渡区)
+            T_plot.append(T_left)
+            Cv_plot.append(Cv_list[i])
             
-            print(f"  热容峰计算方法: {peak_method}")
-            print(f"    全点法(data): Cv={Cv_transition_data:.2f} meV/K (所有点平均)")
-            print(f"    分区法(partition): Cv={Cv_transition_partition:.2f} meV/K (只用分区内点)")
-            print(f"    拟合法(fit): Cv={Cv_transition_fit:.2f} meV/K (拟合线外推)")
-            print(f"    Cv1={Cv1:.2f}, Cv2={Cv2:.2f} meV/K")
-            
-            # 根据选择的方法判断热容峰
-            if peak_method == 'data':
-                Cv_transition = Cv_transition_data
-                method_name = "全点数据法"
-            elif peak_method == 'partition':
-                Cv_transition = Cv_transition_partition
-                method_name = "分区点法"
-            else:  # 'fit'
-                Cv_transition = Cv_transition_fit
-                method_name = "拟合线外推法"
-            
-            # 判断是否存在热容峰
-            has_peak = Cv_transition > max(Cv1, Cv2)
-            
-            if has_peak:
-                Cv_peak = Cv_transition
-                print(f"  ★ 存在热容峰: Cv_peak={Cv_peak:.2f} meV/K ({method_name})")
-                print(f"  热容: Cv1={Cv1:.2f}, Cv_peak={Cv_peak:.2f}, Cv2={Cv2:.2f} meV/K")
+            if boundary['has_peak']:
+                # 在过渡区内使用三次样条局部平滑
+                from scipy.interpolate import CubicSpline
+                T_transition = [T_left, T_boundary, T_right]
+                Cv_transition = [Cv_list[i], boundary['Cv_trans'], Cv_list[i+1]]
+                cs = CubicSpline(T_transition, Cv_transition, bc_type='clamped')
                 
-                # 绘制带平滑峰的热容曲线（使用高斯峰 + sigmoid过渡）
-                T_plot = np.linspace(temps_unique.min(), temps_unique.max(), 500)
-                Cv_plot = np.zeros_like(T_plot)
+                # 在过渡区内生成平滑曲线
+                T_smooth = np.linspace(T_left, T_right, 50)
+                Cv_smooth = cs(T_smooth)
                 
-                # 峰的宽度参数
-                sigma = (T2_first - T1_last) / 2  # 高斯宽度
-                
-                for i, T in enumerate(T_plot):
-                    # 基线：sigmoid 从 Cv1 过渡到 Cv2
-                    transition = 1 / (1 + np.exp(-(T - T_boundary) / (sigma * 0.5)))
-                    baseline = Cv1 + (Cv2 - Cv1) * transition
-                    
-                    # 高斯峰叠加
-                    gaussian = (Cv_peak - baseline) * np.exp(-0.5 * ((T - T_boundary) / sigma)**2)
-                    Cv_plot[i] = baseline + gaussian
-                
-                ax2.plot(T_plot, Cv_plot, 'r-', linewidth=2.5, zorder=3)
-                
-                # 构建导出数据（关键点）
-                T_cv = np.array([temps_unique.min(), T1_last, T_boundary, T2_first, temps_unique.max()])
-                Cv_curve = np.array([Cv1, Cv1, Cv_peak, Cv2, Cv2])
+                # 添加平滑点(去掉第一个点避免重复)
+                T_plot.extend(T_smooth[1:])
+                Cv_plot.extend(Cv_smooth[1:])
             else:
-                print(f"  热容: Cv1={Cv1:.2f} meV/K, Cv2={Cv2:.2f} meV/K (无峰)")
-                
-                # 绘制阶梯形热容曲线（无峰）
-                ax2.plot([temps_unique.min(), T_boundary], [Cv1, Cv1], 'r-', linewidth=2.5, zorder=3)
-                ax2.plot([T_boundary, T_boundary], [Cv1, Cv2], 'r--', linewidth=2, zorder=3)
-                ax2.plot([T_boundary, temps_unique.max()], [Cv2, Cv2], 'r-', linewidth=2.5, zorder=3)
-                
-                T_cv = np.array([temps_unique.min(), T_boundary - 0.1, T_boundary, T_boundary + 0.1, temps_unique.max()])
-                Cv_curve = np.array([Cv1, Cv1, (Cv1 + Cv2) / 2, Cv2, Cv2])
+                # 无峰,直接跳变
+                T_plot.append(T_right)
+                Cv_plot.append(Cv_list[i+1])
+        
+        # 终点 - 直线
+        T_plot.append(temps_unique.max())
+        Cv_plot.append(Cv_list[-1])
+        
+        ax2.plot(T_plot, Cv_plot, 'r-', linewidth=2.5, zorder=3)
+        
+        # 构建导出数据（关键点）
+        T_cv_list = [temps_unique.min()]
+        Cv_curve_list = [Cv_list[0]]
+        
+        for i, boundary in enumerate(boundaries):
+            T_cv_list.append(boundary['T_current_last'])
+            Cv_curve_list.append(Cv_list[i])
+            
+            T_cv_list.append(boundary['T_boundary'])
+            if boundary['has_peak']:
+                Cv_curve_list.append(boundary['Cv_trans'])
+            else:
+                Cv_curve_list.append((Cv_list[i] + Cv_list[i+1]) / 2)
+            
+            T_cv_list.append(boundary['T_next_first'])
+            Cv_curve_list.append(Cv_list[i+1])
+        
+        T_cv_list.append(temps_unique.max())
+        Cv_curve_list.append(Cv_list[-1])
+        
+        T_cv = np.array(T_cv_list)
+        Cv_curve = np.array(Cv_curve_list)
+        
     else:
+        # 单分区情况
         Cv_single = list(phase_fits.values())[0]['Cv']
+        Cv_list = [Cv_single]
         T_cv = np.array([temps_unique.min(), temps_unique.max()])
         Cv_curve = np.array([Cv_single, Cv_single])
         ax2.plot(T_cv, Cv_curve, 'r-', linewidth=2.5, zorder=3)
-        Cv1 = Cv_single
-        Cv2 = Cv_single
     
     ax2.set_ylabel(r'$C_v$ (meV/K)', fontsize=FONT_LABEL, color='red')
     ax2.tick_params(axis='y', labelcolor='red', labelsize=FONT_TICK, color='red')
     ax2.spines['right'].set_color('red')
     
-    # 设置Y轴范围（考虑峰值）
-    cv_values = [Cv1, Cv2] if Cv1 and Cv2 else list(Cv_curve)
-    if Cv_peak:
-        cv_values.append(Cv_peak)
-    cv_min = min(cv_values) * 0.85
-    cv_max = max(cv_values) * 1.1
-    ax2.set_ylim(cv_min, cv_max)
+    # 设置Y轴范围（考虑所有分区的热容和峰值）
+    cv_values = Cv_list.copy()  # 所有分区的热容值
+    if boundaries:
+        # 添加所有边界的过渡热容
+        for boundary in boundaries:
+            if boundary.get('has_peak', False):
+                cv_values.append(boundary['Cv_trans'])
+    
+    if cv_values:
+        cv_min = min(cv_values) * 0.85
+        cv_max = max(cv_values) * 1.1
+        ax2.set_ylim(cv_min, cv_max)
     
     # 设置Cv轴刻度
     Cv_ylim = ax2.get_ylim()
@@ -1102,6 +1273,9 @@ Lindemann阈值自动分区（新功能）:
                         help='使用固定Lindemann阈值自动分区（替代手动--partitions）\n'
                              '例如: --use-lindemann-threshold 0.1 表示 δ<0.1为固相，δ≥0.1为液相\n'
                              '注意: 此参数会覆盖 --partitions，基于Lindemann指数自动确定分区边界')
+    parser.add_argument('--scatter-fit', action='store_true',
+                        help='散点模式：绘制所有原始数据点（不求平均），并对散点直接拟合\n'
+                             '默认模式是对每个温度的多次运行求平均后绘制平均值（带误差棒）')
     
     return parser.parse_args()
 
@@ -1272,7 +1446,8 @@ def main():
         
         result = plot_partition_cv(df, found_name, output_dir, 
                                    args.format, args.dpi, tick_params, custom_partitions,
-                                   args.peak_method, remove_outliers_param, args.outlier_iqr)
+                                   args.peak_method, remove_outliers_param, args.outlier_iqr,
+                                   args.scatter_fit)
         
         if result:
             results.append(result)
