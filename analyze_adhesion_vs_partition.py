@@ -1026,308 +1026,288 @@ def _style_ax(ax):
 
 def plot_size_deconvolution(df, results_partial, output_dir="results/adhesion_analysis"):
     """
-    绘制尺寸效应拆分图 — 论文发表风格 (模仿 plot_eadh_tm_correlation.py)。
-    
-    每组关系一张图, 每张图3列:
-      (a) 简单散点 + 置信区间带
-      (b) 尺寸效应可视化 (颜色=nMetal)
-      (c) 偏相关残差散点 + 置信区间带
-    
-    假设B 特别处理: X轴改为 n_SnO (尺寸变量),
-      (b) 颜色改为粘附能, (c) 残差改为 size 的独立效应.
+    绘制 deconvolution 拆分图 — 对每个假设生成两张 3-panel 图：
+      *_adh_deconvolution.png  — 以粘附能为 X 轴, 控制 size
+      *_size_deconvolution.png — 以尺寸变量为 X 轴, 控制 adhesion
+
+    每张图 3 列:
+      (a) 简单散点 + 置信区间
+      (b) 着色散点 (颜色=被控制的另一变量)
+      (c) 偏相关残差散点 + 置信区间
+
+    共 3 假设 × 2 视角 = 6 张图.
     """
     import os
+    from scipy.stats import linregress as _lr
     os.makedirs(output_dir, exist_ok=True)
-    
+
     for res in results_partial:
-        a = res['analysis']
-        v_all = res['v_all']
-        v_clean = res['v_clean']
-        outliers = res['outliers']
+        a   = res['analysis']
+        hk  = a['label'].replace('预期', 'hypothesis')   # e.g. 'hypothesisA'
 
-        # 判断是否是假设B (尺寸主导, X轴用 size_col)
-        is_hypB = (a['label'] == '预期B')
-        
-        fig, axes = plt.subplots(1, 3, figsize=(30, 9))
-        fig.patch.set_alpha(0)
-        
-        # ---- 离群点掩码 (a)(b)(c) 共用 ----
-        is_outlier = v_all['Structure'].isin(outliers)
-        normal_all = v_all[~is_outlier]
-        out_all = v_all[is_outlier]
-        
-        # ---- (nPt,nSn,nO) 标签生成, 模仿 plot_eadh_tm_correlation.py 的 (x,y) ----
-        def _point_label(row):
-            """生成 (nPt,nSn,nO) 或 (nPt,nSn) 标签"""
-            if 'nPt' in row.index:
-                if 'nO' in row.index and pd.notna(row.get('nO', np.nan)):
-                    return f"({int(row['nPt'])},{int(row['nSn'])},{int(row['nO'])})"
-                else:
-                    return f"({int(row['nPt'])},{int(row['nSn'])})"
-            return row['Structure']
-        
-        show_labels = not args.no_labels
-        
-        # ---- 确定 X 轴列 (B侧用 size_col, A/C用 adh_col) ----
-        if is_hypB:
-            x_col = a['size_col']   # 'n_SnO'
-        else:
-            x_col = a['adh_col']
-        
-        # 去离群后的简单相关
-        r_clean_simple, p_clean_simple = stats.pearsonr(
-            normal_all[x_col], normal_all[a['temp_col']]) if len(normal_all) >= 5 else (np.nan, np.nan)
-        
-        # 全部数据的简单相关 (用于面板a)
-        r_all_simple, p_all_simple = stats.pearsonr(
-            v_all[x_col], v_all[a['temp_col']]) if len(v_all) >= 5 else (np.nan, np.nan)
-        
-        # ---- 英文标签映射 ----
-        if is_hypB:
-            # B侧: X轴是 n_SnO, Y轴是 T_onset_O
-            x_col = a['size_col']   # 'n_SnO'
-            x_label = r'$n_{\mathrm{SnO}}$'
-            adh_label = r'$E_{\mathrm{adh}}^{\mathrm{Type3}}$/atom'  # 用于着色
-        else:
-            x_col = a['adh_col']
-            if 'Type2' in a['adh_col']:
-                x_label = r'$E_{\mathrm{adh}}^{\mathrm{Type2}}$/atom'
-            elif 'Type3' in a['adh_col']:
-                x_label = r'$E_{\mathrm{adh}}^{\mathrm{Type3}}$/atom'
+        for perspective in ('adh', 'size'):
+            # ---- 每次循环重新拷贝, 避免残留 ----
+            v_all   = res['v_all'].copy()
+            v_clean = res['v_clean'].copy()
+            outliers = res['outliers']
+
+            # ---- 选择 X 轴 / 颜色 / 残差方向 ----
+            if perspective == 'adh':
+                # X=粘附能, 颜色=size, 残差去 size
+                x_col     = a['adh_col']
+                color_col = a['size_col']
+                ctrl_col  = a['size_col']        # 被控制 (被去除) 的变量
             else:
-                x_label = r'$E_{\mathrm{adh}}$/atom'
-            adh_label = x_label
-        temp_label = r'$T_{\mathrm{m}}$' if 'lindemann' in a['temp_col'] else r'$T_{\mathrm{onset,O}}$'
-        
-        # ================================================================
-        # (a) 简单散点 + 置信区间
-        # ================================================================
-        ax = axes[0]
-        
-        # 去离群后拟合线 + 置信带
-        if len(normal_all) >= 5:
-            x_arr = normal_all[x_col].values.astype(float)
-            y_arr = normal_all[a['temp_col']].values.astype(float)
-            x_plot = np.linspace(x_arr.min(), x_arr.max(), 100)
-            y_fit, ci = _confidence_band(x_arr, y_arr, x_plot)
-            ax.fill_between(x_plot, y_fit - ci, y_fit + ci, alpha=0.18, color=a['color'])
-            ax.plot(x_plot, y_fit, '-', color=a['color'], lw=4)
-        
-        # 全部数据拟合线 (灰色虚线)
-        z_all = np.polyfit(v_all[x_col].astype(float), v_all[a['temp_col']].astype(float), 1)
-        p_all = np.poly1d(z_all)
-        x_all = np.linspace(v_all[x_col].min(), v_all[x_col].max(), 100)
-        ax.plot(x_all, p_all(x_all), ':', color='gray', lw=2, alpha=0.5)
-        
-        # 散点
-        ax.scatter(normal_all[x_col], normal_all[a['temp_col']],
-                   s=200, c=a['color'], edgecolors='black', linewidths=2,
-                   alpha=0.85, zorder=5)
-        if len(out_all) > 0:
-            ax.scatter(out_all[x_col], out_all[a['temp_col']],
-                       s=250, c='red', marker='X', edgecolors='darkred',
-                       linewidths=2, zorder=6, alpha=0.9)
-        
-        # 标签 — (nPt,nSn,nO) 格式, 模仿 plot_eadh_tm_correlation.py
-        if show_labels:
-            for _, row in v_all.iterrows():
-                is_out = row['Structure'] in outliers
-                lbl = _point_label(row)
-                ax.annotate(lbl, (row[x_col], row[a['temp_col']]),
-                           fontsize=11, ha='center', va='bottom',
-                           xytext=(0, 10), textcoords='offset points',
-                           fontweight='bold' if is_out else 'normal',
-                           color='red' if is_out else 'black', alpha=0.8,
-                           arrowprops=dict(arrowstyle='-', color='gray',
-                                           lw=0.8, alpha=0.4))
-        
-        # 统计文本
-        sig_s = _sig_label(p_all_simple)
-        sig_cs = _sig_label(p_clean_simple)
-        ax.text(0.05, 0.95,
-                f'All (n={len(v_all)}):   r = {r_all_simple:+.3f} ({sig_s})\n'
-                f'Clean (n={len(normal_all)}): r = {r_clean_simple:+.3f} ({sig_cs})',
-                transform=ax.transAxes, fontsize=16, va='top', ha='left',
-                bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='gray', alpha=0.9))
-        
-        if is_hypB:
-            ax.set_xlabel(x_label, fontsize=22)
-        else:
-            ax.set_xlabel(f'{x_label} (eV/atom)', fontsize=22)
-        ax.set_ylabel(f'{temp_label} (K)', fontsize=22)
-        ax.set_title('(a) Simple correlation', fontsize=22, fontweight='bold', loc='left')
-        _style_ax(ax)
-        
-        # ================================================================
-        # (b) 尺寸效应可视化
-        # ================================================================
-        ax = axes[1]
-        if is_hypB:
-            # B: X=n_SnO, 颜色=粘附能
-            color_col = a['adh_col']
-            cbar_label = adh_label + ' (eV/atom)'
-            cmap_b = 'RdYlBu'
-            title_b = r'(b) Colored by $E_{\mathrm{adh}}^{\mathrm{Type3}}$/atom'
-        else:
-            # A/C: X=adh, 颜色=size
-            color_col = a['size_col']
-            cbar_label = r'n$_{\mathrm{Metal}}$'
-            cmap_b = 'RdYlGn_r'
-            title_b = r'(b) Colored by n$_{\mathrm{Metal}}$'
+                # X=size, 颜色=粘附能, 残差去 adh
+                x_col     = a['size_col']
+                color_col = a['adh_col']
+                ctrl_col  = a['adh_col']
 
-        scatter = ax.scatter(normal_all[x_col], normal_all[a['temp_col']], s=200,
-                             c=normal_all[color_col], cmap=cmap_b, edgecolors='black',
-                             linewidths=2, zorder=5, alpha=0.85,
-                             vmin=v_all[color_col].min(), vmax=v_all[color_col].max())
-        if len(out_all) > 0:
-            ax.scatter(out_all[x_col], out_all[a['temp_col']], s=250,
-                       c='red', marker='X', edgecolors='darkred', linewidths=2,
-                       zorder=6, alpha=0.9)
-        cbar = plt.colorbar(scatter, ax=ax, shrink=0.85, pad=0.02)
-        cbar.set_label(cbar_label, fontsize=20)
-        cbar.ax.tick_params(labelsize=16)
-        
-        if show_labels:
-            for _, row in v_all.iterrows():
-                is_out = row['Structure'] in outliers
-                lbl = _point_label(row)
-                ax.annotate(lbl, (row[x_col], row[a['temp_col']]),
-                           fontsize=11, ha='center', va='bottom',
-                           xytext=(0, 10), textcoords='offset points',
-                           fontweight='bold' if is_out else 'normal',
-                           color='red' if is_out else 'black', alpha=0.8,
-                           arrowprops=dict(arrowstyle='-', color='gray',
-                                           lw=0.8, alpha=0.4))
-        
-        # 混淆相关 (去离群后)
-        if is_hypB:
-            # B: 展示 adh 与 size/T 的混淆
-            r_adh_sz, _ = stats.pearsonr(normal_all[a['adh_col']], normal_all[a['size_col']])
-            r_adh_T, _ = stats.pearsonr(normal_all[a['adh_col']], normal_all[a['temp_col']])
-            ax.text(0.05, 0.95,
-                    'Adhesion confounding:\n'
-                    f'{adh_label} → ' + r'$n_{\mathrm{SnO}}$' + f': r = {r_adh_sz:+.2f}\n'
-                    f'{adh_label} → {temp_label}: r = {r_adh_T:+.2f}',
-                    transform=ax.transAxes, fontsize=14, va='top', ha='left',
-                    bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow', ec='orange', alpha=0.9))
-        else:
-            r_sz_adh, _ = stats.pearsonr(normal_all[a['size_col']], normal_all[a['adh_col']])
-            r_sz_T, _ = stats.pearsonr(normal_all[a['size_col']], normal_all[a['temp_col']])
-            ax.text(0.05, 0.95,
-                    'Size confounding:\n'
-                    r'n$_{\mathrm{Metal}}$' + f' → {adh_label}: r = {r_sz_adh:+.2f}\n'
-                    r'n$_{\mathrm{Metal}}$' + f' → {temp_label}: r = {r_sz_T:+.2f}',
-                    transform=ax.transAxes, fontsize=14, va='top', ha='left',
-                    bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow', ec='orange', alpha=0.9))
-        
-        if is_hypB:
-            ax.set_xlabel(x_label, fontsize=22)
-        else:
-            ax.set_xlabel(f'{x_label} (eV/atom)', fontsize=22)
-        ax.set_ylabel(f'{temp_label} (K)', fontsize=22)
-        ax.set_title(title_b, fontsize=22, fontweight='bold', loc='left')
-        _style_ax(ax)
-        
-        # ================================================================
-        # (c) 偏相关残差散点 + 置信区间
-        #     B侧: 从 n_SnO 和 T 中去掉 adh 的影响 → size_res vs T_res_adh
-        #     A/C:  从 adh  和 T 中去掉 size 的影响 → adh_res  vs T_res
-        # ================================================================
-        ax = axes[2]
-        normal = v_all[~is_outlier]
-        out_pts = v_all[is_outlier]
+            # ---- 英文标签 ----
+            def _adh_lbl(col):
+                if 'Type2' in col:
+                    return r'$E_{\mathrm{adh}}^{\mathrm{Type2}}$/atom'
+                elif 'Type3' in col:
+                    return r'$E_{\mathrm{adh}}^{\mathrm{Type3}}$/atom'
+                elif 'Eadh' in col:
+                    return r'$E_{\mathrm{adh}}$/atom'
+                return col
 
-        if is_hypB:
-            # --- B 侧: 偏相关 r(n_SnO, T | adh) ----------------------
-            # 用线性回归从 size 和 T 中去掉 adh 的影响
-            from scipy.stats import linregress as _lr
-            for _df in (v_all, v_clean):
-                sl_s, it_s, *_ = _lr(_df[a['adh_col']], _df[a['size_col']])
-                _df = _df.copy()          # 避免 SettingWithCopy
-                sl_t, it_t, *_ = _lr(_df[a['adh_col']], _df[a['temp_col']])
-            # v_all
-            sl_s, it_s, *_ = _lr(v_all[a['adh_col']], v_all[a['size_col']])
-            sl_t, it_t, *_ = _lr(v_all[a['adh_col']], v_all[a['temp_col']])
-            v_all = v_all.copy()
-            v_all['_xres'] = v_all[a['size_col']] - (sl_s * v_all[a['adh_col']] + it_s)
-            v_all['_yres'] = v_all[a['temp_col']] - (sl_t * v_all[a['adh_col']] + it_t)
-            # v_clean
-            sl_s2, it_s2, *_ = _lr(v_clean[a['adh_col']], v_clean[a['size_col']])
-            sl_t2, it_t2, *_ = _lr(v_clean[a['adh_col']], v_clean[a['temp_col']])
-            v_clean = v_clean.copy()
-            v_clean['_xres'] = v_clean[a['size_col']] - (sl_s2 * v_clean[a['adh_col']] + it_s2)
-            v_clean['_yres'] = v_clean[a['temp_col']] - (sl_t2 * v_clean[a['adh_col']] + it_t2)
-            # 重新算 is_outlier mask (v_all 已被复制)
+            def _size_lbl(col):
+                if col == 'n_SnO':
+                    return r'$n_{\mathrm{SnO}}$'
+                elif col == 'n_PtSn':
+                    return r'$n_{\mathrm{PtSn}}$'
+                elif col == 'nMetal':
+                    return r'$n_{\mathrm{Metal}}$'
+                return col
+
+            def _col_label(col, unit=True):
+                """为任意列生成美观标签"""
+                if 'Type' in col or 'Eadh' in col:
+                    lbl = _adh_lbl(col)
+                    return f'{lbl} (eV/atom)' if unit else lbl
+                else:
+                    return _size_lbl(col)
+
+            x_label     = _col_label(x_col)
+            color_label = _col_label(color_col)
+            temp_label  = (r'$T_{\mathrm{m}}$' if 'lindemann' in a['temp_col']
+                           else r'$T_{\mathrm{onset,O}}$')
+
+            # ---- 离群掩码 ----
             is_outlier = v_all['Structure'].isin(outliers)
+            normal_all = v_all[~is_outlier]
+            out_all    = v_all[is_outlier]
+
+            # ---- 标签生成 ----
+            def _point_label(row):
+                if 'nPt' in row.index:
+                    if 'nO' in row.index and pd.notna(row.get('nO', np.nan)):
+                        return f"({int(row['nPt'])},{int(row['nSn'])},{int(row['nO'])})"
+                    else:
+                        return f"({int(row['nPt'])},{int(row['nSn'])})"
+                return row['Structure']
+
+            show_labels = not args.no_labels
+
+            # ---- 简单相关 ----
+            r_all_s, p_all_s = (stats.pearsonr(v_all[x_col].astype(float),
+                                               v_all[a['temp_col']].astype(float))
+                                if len(v_all) >= 5 else (np.nan, np.nan))
+            r_cln_s, p_cln_s = (stats.pearsonr(normal_all[x_col].astype(float),
+                                               normal_all[a['temp_col']].astype(float))
+                                if len(normal_all) >= 5 else (np.nan, np.nan))
+
+            # ---- 残差计算: 从 x_col 和 temp 中去掉 ctrl_col 的线性影响 ----
+            # v_all
+            sl_x, it_x, *_ = _lr(v_all[ctrl_col].astype(float), v_all[x_col].astype(float))
+            sl_t, it_t, *_ = _lr(v_all[ctrl_col].astype(float), v_all[a['temp_col']].astype(float))
+            v_all['_xres'] = v_all[x_col] - (sl_x * v_all[ctrl_col] + it_x)
+            v_all['_yres'] = v_all[a['temp_col']] - (sl_t * v_all[ctrl_col] + it_t)
+            # v_clean
+            sl_x2, it_x2, *_ = _lr(v_clean[ctrl_col].astype(float), v_clean[x_col].astype(float))
+            sl_t2, it_t2, *_ = _lr(v_clean[ctrl_col].astype(float), v_clean[a['temp_col']].astype(float))
+            v_clean['_xres'] = v_clean[x_col] - (sl_x2 * v_clean[ctrl_col] + it_x2)
+            v_clean['_yres'] = v_clean[a['temp_col']] - (sl_t2 * v_clean[ctrl_col] + it_t2)
+
+            # 偏相关 r
+            r_cln_c, p_cln_c = stats.pearsonr(v_clean['_xres'], v_clean['_yres'])
+            r_all_c, p_all_c = stats.pearsonr(v_all['_xres'],   v_all['_yres'])
+
+            # 重建 outlier masks (v_all 已被修改)
+            is_outlier = v_all['Structure'].isin(outliers)
+            normal_all = v_all[~is_outlier]
+            out_all    = v_all[is_outlier]
+
+            # ================================================================
+            fig, axes = plt.subplots(1, 3, figsize=(30, 9))
+            fig.patch.set_alpha(0)
+
+            # ================================================================
+            # (a) 简单散点 + 置信区间
+            # ================================================================
+            ax = axes[0]
+            if len(normal_all) >= 5:
+                xa = normal_all[x_col].values.astype(float)
+                ya = normal_all[a['temp_col']].values.astype(float)
+                xp = np.linspace(xa.min(), xa.max(), 100)
+                yf, ci = _confidence_band(xa, ya, xp)
+                ax.fill_between(xp, yf - ci, yf + ci, alpha=0.18, color=a['color'])
+                ax.plot(xp, yf, '-', color=a['color'], lw=4)
+
+            # 全数据拟合线
+            z = np.polyfit(v_all[x_col].astype(float), v_all[a['temp_col']].astype(float), 1)
+            pf = np.poly1d(z)
+            xl = np.linspace(v_all[x_col].min(), v_all[x_col].max(), 100)
+            ax.plot(xl, pf(xl), ':', color='gray', lw=2, alpha=0.5)
+
+            ax.scatter(normal_all[x_col], normal_all[a['temp_col']],
+                       s=200, c=a['color'], edgecolors='black', linewidths=2,
+                       alpha=0.85, zorder=5)
+            if len(out_all) > 0:
+                ax.scatter(out_all[x_col], out_all[a['temp_col']],
+                           s=250, c='red', marker='X', edgecolors='darkred',
+                           linewidths=2, zorder=6, alpha=0.9)
+
+            if show_labels:
+                for _, row in v_all.iterrows():
+                    is_out = row['Structure'] in outliers
+                    ax.annotate(_point_label(row),
+                               (row[x_col], row[a['temp_col']]),
+                               fontsize=11, ha='center', va='bottom',
+                               xytext=(0, 10), textcoords='offset points',
+                               fontweight='bold' if is_out else 'normal',
+                               color='red' if is_out else 'black', alpha=0.8,
+                               arrowprops=dict(arrowstyle='-', color='gray',
+                                               lw=0.8, alpha=0.4))
+
+            ax.text(0.05, 0.95,
+                    f'All (n={len(v_all)}):   r = {r_all_s:+.3f} ({_sig_label(p_all_s)})\n'
+                    f'Clean (n={len(normal_all)}): r = {r_cln_s:+.3f} ({_sig_label(p_cln_s)})',
+                    transform=ax.transAxes, fontsize=16, va='top', ha='left',
+                    bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='gray', alpha=0.9))
+
+            ax.set_xlabel(x_label, fontsize=22)
+            ax.set_ylabel(f'{temp_label} (K)', fontsize=22)
+            ax.set_title('(a) Simple correlation', fontsize=22, fontweight='bold', loc='left')
+            _style_ax(ax)
+
+            # ================================================================
+            # (b) 着色散点  — 颜色 = 被控制的变量
+            # ================================================================
+            ax = axes[1]
+            # 选 cmap: 粘附能→ RdYlBu, 尺寸 → RdYlGn_r
+            cmap_b = 'RdYlBu' if ('Type' in color_col or 'Eadh' in color_col) else 'RdYlGn_r'
+
+            scatter = ax.scatter(normal_all[x_col], normal_all[a['temp_col']], s=200,
+                                 c=normal_all[color_col], cmap=cmap_b, edgecolors='black',
+                                 linewidths=2, zorder=5, alpha=0.85,
+                                 vmin=v_all[color_col].min(), vmax=v_all[color_col].max())
+            if len(out_all) > 0:
+                ax.scatter(out_all[x_col], out_all[a['temp_col']], s=250,
+                           c='red', marker='X', edgecolors='darkred', linewidths=2,
+                           zorder=6, alpha=0.9)
+            cbar = plt.colorbar(scatter, ax=ax, shrink=0.85, pad=0.02)
+            cbar.set_label(color_label, fontsize=20)
+            cbar.ax.tick_params(labelsize=16)
+
+            if show_labels:
+                for _, row in v_all.iterrows():
+                    is_out = row['Structure'] in outliers
+                    ax.annotate(_point_label(row),
+                               (row[x_col], row[a['temp_col']]),
+                               fontsize=11, ha='center', va='bottom',
+                               xytext=(0, 10), textcoords='offset points',
+                               fontweight='bold' if is_out else 'normal',
+                               color='red' if is_out else 'black', alpha=0.8,
+                               arrowprops=dict(arrowstyle='-', color='gray',
+                                               lw=0.8, alpha=0.4))
+
+            # 混淆相关文本
+            ctrl_label_short = _col_label(ctrl_col, unit=False)
+            r_ctrl_x, _ = stats.pearsonr(normal_all[ctrl_col].astype(float),
+                                         normal_all[x_col].astype(float))
+            r_ctrl_T, _ = stats.pearsonr(normal_all[ctrl_col].astype(float),
+                                         normal_all[a['temp_col']].astype(float))
+            confound_name = 'Size' if perspective == 'adh' else 'Adhesion'
+            ax.text(0.05, 0.95,
+                    f'{confound_name} confounding:\n'
+                    f'{ctrl_label_short} → {_col_label(x_col, unit=False)}: r = {r_ctrl_x:+.2f}\n'
+                    f'{ctrl_label_short} → {temp_label}: r = {r_ctrl_T:+.2f}',
+                    transform=ax.transAxes, fontsize=14, va='top', ha='left',
+                    bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow', ec='orange', alpha=0.9))
+
+            ax.set_xlabel(x_label, fontsize=22)
+            ax.set_ylabel(f'{temp_label} (K)', fontsize=22)
+            title_b = f'(b) Colored by {_col_label(color_col, unit=False)}'
+            ax.set_title(title_b, fontsize=22, fontweight='bold', loc='left')
+            _style_ax(ax)
+
+            # ================================================================
+            # (c) 偏相关残差散点 + 置信区间
+            # ================================================================
+            ax = axes[2]
             normal = v_all[~is_outlier]
             out_pts = v_all[is_outlier]
-            xres_col, yres_col = '_xres', '_yres'
-            # 偏相关 r
-            r_clean_c, p_clean_c = stats.pearsonr(v_clean['_xres'], v_clean['_yres'])
-            r_all_c,   p_all_c   = stats.pearsonr(v_all['_xres'],   v_all['_yres'])
-            c_xlabel = r'$n_{\mathrm{SnO}}$ residual'
-            c_title  = '(c) Partial correlation (adhesion-corrected)'
-        else:
-            xres_col, yres_col = 'adh_res', 'T_res'
-            r_clean_c, p_clean_c = res['r_clean'], res['p_clean']
-            r_all_c,   p_all_c   = res['r_partial'], res['p_partial']
-            c_xlabel = f'{adh_label} residual (eV/atom)'
-            c_title  = '(c) Partial correlation (size-corrected)'
 
-        # 去离群后拟合线 + 置信带
-        if len(v_clean) >= 5:
-            x_arr = v_clean[xres_col].values
-            y_arr = v_clean[yres_col].values
-            x_plot = np.linspace(x_arr.min(), x_arr.max(), 100)
-            y_fit, ci = _confidence_band(x_arr, y_arr, x_plot)
-            ax.fill_between(x_plot, y_fit - ci, y_fit + ci, alpha=0.18, color=a['color_clean'])
-            ax.plot(x_plot, y_fit, '-', color=a['color_clean'], lw=4,
-                    label=f'Clean (n={len(v_clean)}): r = {r_clean_c:+.3f} {_sig_label(p_clean_c)}')
+            if len(v_clean) >= 5:
+                x_arr = v_clean['_xres'].values
+                y_arr = v_clean['_yres'].values
+                xp = np.linspace(x_arr.min(), x_arr.max(), 100)
+                yf, ci = _confidence_band(x_arr, y_arr, xp)
+                ax.fill_between(xp, yf - ci, yf + ci, alpha=0.18, color=a['color_clean'])
+                ax.plot(xp, yf, '-', color=a['color_clean'], lw=4,
+                        label=f'Clean (n={len(v_clean)}): r = {r_cln_c:+.3f} {_sig_label(p_cln_c)}')
 
-        # 全部数据拟合线 (灰色虚线)
-        z_all = np.polyfit(v_all[xres_col], v_all[yres_col], 1)
-        p_all_fit = np.poly1d(z_all)
-        x_line = np.linspace(v_all[xres_col].min(), v_all[xres_col].max(), 100)
-        ax.plot(x_line, p_all_fit(x_line), ':', color='gray', lw=2, alpha=0.5,
-                label=f'All (n={len(v_all)}): r = {r_all_c:+.3f} {_sig_label(p_all_c)}')
+            z_c = np.polyfit(v_all['_xres'], v_all['_yres'], 1)
+            pf_c = np.poly1d(z_c)
+            xl_c = np.linspace(v_all['_xres'].min(), v_all['_xres'].max(), 100)
+            ax.plot(xl_c, pf_c(xl_c), ':', color='gray', lw=2, alpha=0.5,
+                    label=f'All (n={len(v_all)}): r = {r_all_c:+.3f} {_sig_label(p_all_c)}')
 
-        # 散点
-        ax.scatter(normal[xres_col], normal[yres_col], s=200, c=a['color_clean'],
-                   edgecolors='black', linewidths=2, zorder=5, alpha=0.85)
-        if len(out_pts) > 0:
-            ax.scatter(out_pts[xres_col], out_pts[yres_col], s=250, c='red',
-                       marker='X', edgecolors='darkred', linewidths=2, zorder=6, alpha=0.9,
-                       label=f'Outliers (n={len(out_pts)})')
+            ax.scatter(normal['_xres'], normal['_yres'], s=200, c=a['color_clean'],
+                       edgecolors='black', linewidths=2, zorder=5, alpha=0.85)
+            if len(out_pts) > 0:
+                ax.scatter(out_pts['_xres'], out_pts['_yres'], s=250, c='red',
+                           marker='X', edgecolors='darkred', linewidths=2, zorder=6, alpha=0.9,
+                           label=f'Outliers (n={len(out_pts)})')
 
-        # 标签 — (nPt,nSn,nO) 格式
-        if show_labels:
-            for _, row in v_all.iterrows():
-                is_out = row['Structure'] in outliers
-                lbl = _point_label(row)
-                ax.annotate(lbl, (row[xres_col], row[yres_col]),
-                           fontsize=11, ha='center', va='bottom',
-                           xytext=(0, 10), textcoords='offset points',
-                           fontweight='bold' if is_out else 'normal',
-                           color='red' if is_out else 'black', alpha=0.8,
-                           arrowprops=dict(arrowstyle='-', color='gray',
-                                           lw=0.8, alpha=0.4))
+            if show_labels:
+                for _, row in v_all.iterrows():
+                    is_out = row['Structure'] in outliers
+                    ax.annotate(_point_label(row),
+                               (row['_xres'], row['_yres']),
+                               fontsize=11, ha='center', va='bottom',
+                               xytext=(0, 10), textcoords='offset points',
+                               fontweight='bold' if is_out else 'normal',
+                               color='red' if is_out else 'black', alpha=0.8,
+                               arrowprops=dict(arrowstyle='-', color='gray',
+                                               lw=0.8, alpha=0.4))
 
-        ax.axhline(y=0, color='gray', ls=':', alpha=0.4, lw=1)
-        ax.axvline(x=0, color='gray', ls=':', alpha=0.4, lw=1)
+            ax.axhline(y=0, color='gray', ls=':', alpha=0.4, lw=1)
+            ax.axvline(x=0, color='gray', ls=':', alpha=0.4, lw=1)
 
-        ax.set_xlabel(c_xlabel, fontsize=22)
-        ax.set_ylabel(f'{temp_label} residual (K)', fontsize=22)
-        ax.set_title(c_title, fontsize=22, fontweight='bold', loc='left')
-        ax.legend(loc='lower right', fontsize=14, frameon=True, fancybox=True,
-                  framealpha=0.9, edgecolor='gray')
-        _style_ax(ax)
-        
-        plt.tight_layout(w_pad=4)
-        
-        fname = f'{a["label"].replace("预期", "hypothesis")}_size_deconvolution.png'
-        fig.savefig(f"{output_dir}/{fname}", dpi=300, bbox_inches='tight', transparent=True)
-        print(f"  [OK] {a['label']} 尺寸拆分图: {output_dir}/{fname}")
-        plt.close()
+            ctrl_what = _col_label(ctrl_col, unit=False)
+            c_xlabel = f'{_col_label(x_col, unit=False)} residual'
+            if perspective == 'adh':
+                c_xlabel += ' (eV/atom)'
+            ax.set_xlabel(c_xlabel, fontsize=22)
+            ax.set_ylabel(f'{temp_label} residual (K)', fontsize=22)
+            corrected_by = 'size' if perspective == 'adh' else 'adhesion'
+            ax.set_title(f'(c) Partial correlation ({corrected_by}-corrected)',
+                         fontsize=22, fontweight='bold', loc='left')
+            ax.legend(loc='lower right', fontsize=14, frameon=True, fancybox=True,
+                      framealpha=0.9, edgecolor='gray')
+            _style_ax(ax)
+
+            # ---- 保存 ----
+            plt.tight_layout(w_pad=4)
+            fname = f'{hk}_{perspective}_deconvolution.png'
+            fig.savefig(f"{output_dir}/{fname}", dpi=300, bbox_inches='tight',
+                        transparent=True)
+            print(f"  [OK] {a['label']} {perspective} 拆分图: {output_dir}/{fname}")
+            plt.close()
 
 
 # ============================================================================
