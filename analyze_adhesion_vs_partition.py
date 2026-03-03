@@ -39,6 +39,10 @@ parser.add_argument('--threshold', type=float, default=2.0,
                          '  999 → 实际不排除任何点')
 parser.add_argument('--no-labels', action='store_true',
                     help='不显示数据点标签')
+parser.add_argument('--no-r', action='store_true',
+                    help='图例中不显示 Pearson r 值')
+parser.add_argument('--no-r2', action='store_true',
+                    help='图例中不显示 R² 值')
 parser.add_argument('--exclude', nargs='*', default=None,
                     help='手动指定额外排除的体系 (空格分隔)\n'
                          '  例: --exclude Sn1Pt2O1 Pt7Sn6O1')
@@ -62,21 +66,59 @@ parser.add_argument('--clean-panel', nargs='*', default=None,
                     help='只输出指定面板 (默认全部)\n'
                          '  例: --clean-panel Bc     → 只输出 hypothesisB (c)\n'
                          '       --clean-panel Aa Bf  → 只输出 A(a) 和 B(f) Bc2 size-effect')
-parser.add_argument('--interactive', action='store_true',
+parser.add_argument('--interactive', nargs='*', default=None,
                     help='交互模式: 可拖动标签调整位置\n'
+                         '  不带参数 → 所有面板全部交互\n'
+                         '  带参数   → 只对指定面板交互, 例:\n'
+                         '    --interactive Ag-adh          → 只交互 hypothesisA (g_adh)\n'
+                         '    --interactive Aa Bb Bg-size   → 多面板\n'
+                         '  面板名规则: 假设字母(A/B/C) + 面板字母(a-g) + 可选后缀(-adh/-size/-f)\n'
                          '  拖动后控制台打印偏移量, 复制到 --clean-offsets 参数\n'
-                         '  建议配合 --clean-panel 只打开一张图')
+                         '  建议配合 --clean-panel 只打开需要的面板')
 parser.add_argument('--clean-offsets', nargs='*', default=None,
                     help='手动指定标签偏移 (来自 --interactive 输出)\n'
                          '  格式: PANEL@Structure:dx,dy\n'
                          '  例: --clean-offsets Bc@Pt8Sn3O2:0.5,-20 Bc@Pt6Sn7O1:-0.3,15')
 parser.add_argument('--no-stars', action='store_true',
                     help='图例中不显示显著性星号 (***/**/*), 只显示 r = +0.xx')
+parser.add_argument('--heatmap-vmax', type=float, default=1.0,
+                    help='summary heatmap 色标上限 (默认: 1.0, 即截断 |β|>1)\n'
+                         '  1.0 → 截断到1, 色阶均匀, 视觉干净\n'
+                         '  1.5 → 容纳 |β|>1, 但整体颜色偏浅')
+parser.add_argument('--heatmap-r2', action='store_true', default=False,
+                    help='在 summary heatmap 最前面补充两列单变量 R²\n'
+                         '  R²(adh only) 和 R²(size only) (默认: 不显示)\n'
+                         '  加上后共7列, 可直观对比粘附能与尺寸的独立解释力')
+parser.add_argument('--exclude-c', nargs='*', default=None,
+                    help='手动排除预期C (Pt8Snx) 中的特定结构 (空格分隔)\n'
+                         '  例: --exclude-c Pt8Sn0\n'
+                         '       --exclude-c Pt8Sn0 Pt4Sn4')
+parser.add_argument('--offsets-file', default='label_offsets.json',
+                    help='标签偏移量持久化文件 (默认: label_offsets.json)\n'
+                         '  --interactive 模式下拖动后自动保存到该文件\n'
+                         '  下次运行时自动读取, 无需再粘贴 --clean-offsets\n'
+                         '  --clean-offsets 的值可覆盖文件中同名键')
 args = parser.parse_args()
 
-# ============================================================================
-# 数据定义
-# ============================================================================
+# --------------------------------------------------------------------------
+# 辅助: 判断某个面板是否需要交互
+#   --interactive          (args.interactive == [])   → 全部面板交互
+#   --interactive Ag-adh   (args.interactive == ['Ag-adh']) → 只指定面板
+#   未传 --interactive      (args.interactive is None) → 不交互
+#
+# panel_key 规则 (与 --interactive 参数保持一致):
+#   单字母面板:  'Aa' 'Bb' 'Cc' 'Ad' 'Be' 'Bf'
+#   g 面板后缀:  'Ag-adh' 'Ag-size' 'Bg-adh' 'Bg-size' 'Cg-adh' 'Cg-size'
+# --------------------------------------------------------------------------
+def _is_interactive(panel_key: str) -> bool:
+    """返回 True 表示该面板应进入交互模式。"""
+    if args.interactive is None:
+        return False          # 未传 --interactive
+    if len(args.interactive) == 0:
+        return True           # --interactive 不带参数 → 全部
+    return panel_key in args.interactive
+
+
 
 # 分区边界温度 (来自kmeans聚类和Lindemann阈值δ=0.1) + T_onset_O (氧迁移起始温度)
 PARTITION_DATA = {
@@ -218,13 +260,13 @@ PT8SNX_DATA = {
     'Pt7Sn1':    {'series': 'PtxSn8-x', 'nPt': 7, 'nSn': 1, 'Eadh': -0.293225125,  'Tm': 641.3},
     'Pt8Sn0':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 0, 'Eadh': -0.661488,     'Tm': 800.0},
     'Pt8Sn1':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 1, 'Eadh': -0.315793444,  'Tm': 604.0},
-    'Pt8Sn2':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 2, 'Eadh': -0.2898329,    'Tm': 650.0},
+    'Pt8Sn2':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 2, 'Eadh': -0.2898329,    'Tm': 705.0},
     'Pt8Sn3':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 3, 'Eadh': -0.201466091,  'Tm': 574.0},
     'Pt8Sn4':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 4, 'Eadh': -0.136585333,  'Tm': 566.3},
     'Pt8Sn5':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 5, 'Eadh': -0.114243077,  'Tm': 575.5},
     'Pt8Sn6':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 6, 'Eadh': -0.135212286,  'Tm': 528.5},
     'Pt8Sn7':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 7, 'Eadh': -0.152302333,  'Tm': 577.1},
-    'Pt8Sn8':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 8, 'Eadh': -0.08049725,   'Tm': 550.0},
+    'Pt8Sn8':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 8, 'Eadh': -0.08049725,   'Tm': 477.0},
     'Pt8Sn9':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 9, 'Eadh': -0.040358529,  'Tm': 504.5},
     'Pt8Sn10':   {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 10,'Eadh':  0.000571111,  'Tm': 472.2},
 }
@@ -741,6 +783,12 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
     # 定义分析组
     # 预期C 使用独立的 Pt8Snx 数据集 (通过 df_override 传入)
     df_c = build_pt8snx_dataframe()
+    # --exclude-c: 手动排除 Pt8Snx 系列中的特定结构
+    if args.exclude_c:
+        before = len(df_c)
+        df_c = df_c[~df_c['Structure'].isin(args.exclude_c)].copy()
+        excluded = [s for s in args.exclude_c if s in PT8SNX_DATA]
+        print(f"  ⚙ --exclude-c: 从预期C排除 {excluded}  ({before} → {len(df_c)} 个点)")
     analyses = [
         {
             'label': '预期A',
@@ -897,11 +945,20 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
         
         print(f"  │ clean({len(v_clean)}点)偏相关:  r = {r_clean:+.3f}, p = {p_clean:.3e} {_sig_label(p_clean)}")
         print(f"  │")
-        # ---- 多元回归: T = a*adh + b*size + c ----
+        # ---- 单变量 R²: adh-only 和 size-only ----
         from sklearn.linear_model import LinearRegression as _LR
-        _x_adh = v_clean[a['adh_col']].values
+        _x_adh  = v_clean[a['adh_col']].values
         _x_size = v_clean[a['size_col']].values
-        _y_T = v_clean[a['temp_col']].values
+        _y_T    = v_clean[a['temp_col']].values
+        _R2_adh_only  = _LR().fit(_x_adh.reshape(-1,1),  _y_T).score(_x_adh.reshape(-1,1),  _y_T)
+        _R2_size_only = _LR().fit(_x_size.reshape(-1,1), _y_T).score(_x_size.reshape(-1,1), _y_T)
+        # 单变量 Pearson r（有符号）及 p 值
+        _r_adh_univ,  _p_adh_univ  = stats.pearsonr(_x_adh,  _y_T)
+        _r_size_univ, _p_size_univ = stats.pearsonr(_x_size, _y_T)
+        print(f"  │ 单变量 R²(adh only)  = {_R2_adh_only:.3f}  (r = {_r_adh_univ:+.3f} {_sig_label(_p_adh_univ)})")
+        print(f"  │ 单变量 R²(size only) = {_R2_size_only:.3f}  (r = {_r_size_univ:+.3f} {_sig_label(_p_size_univ)})")
+        print(f"  │")
+        # ---- 多元回归: T = a*adh + b*size + c ----
         _X_mr = np.column_stack([_x_adh, _x_size])
         _reg_mr = _LR().fit(_X_mr, _y_T)
         _R2_mr = _reg_mr.score(_X_mr, _y_T)
@@ -963,6 +1020,9 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
             'v_all': v_full_res, 'v_clean': v_clean, 'analysis': a,
             # 多元回归信息
             'R2_mr': _R2_mr,
+            'R2_adh_only': _R2_adh_only, 'R2_size_only': _R2_size_only,
+            'r_adh_univ': _r_adh_univ, 'p_adh_univ': _p_adh_univ,
+            'r_size_univ': _r_size_univ, 'p_size_univ': _p_size_univ,
             'coef_adh': _coef_adh, 'coef_size': _coef_size, 'intercept': _intercept,
             'r_partial_adh': _rp_adh, 'p_partial_adh': _p_adh, 'beta_adh': _beta_adh,
             'r_partial_size': _rp_size, 'p_partial_size': _p_size, 'beta_size': _beta_size,
@@ -1482,8 +1542,8 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                 print(f"  [WARN] 无效刻度格式 (缺少':'): {spec}")
                 continue
             key, vals = spec.split(':', 1)
-            if len(key) != 2 or key[0] not in 'ABC' or key[1] not in 'abcdef':
-                print(f"  [WARN] 无效面板标识 '{key}' (应为 Aa-Af/Ba-Bf/...)")
+            if len(key) != 2 or key[0] not in 'ABC' or key[1] not in 'abcdefg':
+                print(f"  [WARN] 无效面板标识 '{key}' (应为 Aa-Ag/Ba-Bg/...)")
                 continue
             try:
                 tick_vals = [float(v) for v in vals.split(',')]
@@ -1501,6 +1561,23 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
     # ---- 标签标注辅助函数 (模仿 plot_eadh_tm_correlation.py) ----
     # 解析用户偏移 --clean-offsets  格式: PANEL@Structure:dx,dy
     offset_map = {}  # (panel_key, structure) -> (dx, dy)
+
+    # 1) 先从 JSON 文件加载历史偏移
+    import json as _json, os as _os
+    _offsets_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                  args.offsets_file)
+    if _os.path.exists(_offsets_path):
+        try:
+            with open(_offsets_path, 'r', encoding='utf-8') as _f:
+                _saved = _json.load(_f)
+            for _k, _v in _saved.items():
+                _panel, _struct = _k.split('@', 1)
+                offset_map[(_panel, _struct)] = tuple(_v)
+            print(f'  [INFO] 已从 {args.offsets_file} 加载 {len(_saved)} 条标签偏移')
+        except Exception as _e:
+            print(f'  [WARN] 读取 {args.offsets_file} 失败: {_e}')
+
+    # 2) --clean-offsets 命令行参数覆盖文件中的同名键
     if args.clean_offsets:
         for spec in args.clean_offsets:
             try:
@@ -1623,10 +1700,11 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
         rows_data = []
         for i_row, (_, row) in enumerate(v.iterrows()):
             if 'nPt' in row.index:
+                nPt = int(row['nPt']); nSn = int(row['nSn'])
                 if 'nO' in row.index and pd.notna(row.get('nO', np.nan)):
-                    lbl = f"({int(row['nPt'])},{int(row['nSn'])},{int(row['nO'])})"
+                    lbl = f"({nPt},{nSn},{int(row['nO'])})"
                 else:
-                    lbl = f"({int(row['nPt'])},{int(row['nSn'])})"
+                    lbl = f"({nPt},{nSn})"
             else:
                 lbl = row['Structure']
             struct = row['Structure'] if 'Structure' in row.index else lbl
@@ -1653,9 +1731,9 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                               ha='left', va=va, color='black',
                               clip_on=False,
                               bbox=dict(boxstyle='round,pad=0.5',
-                                        facecolor='lightyellow' if args.interactive else 'white',
-                                        edgecolor='gray' if args.interactive else 'none',
-                                        alpha=0.7 if args.interactive else 0),
+                                        facecolor='lightyellow' if args.interactive is not None else 'white',
+                                        edgecolor='gray' if args.interactive is not None else 'none',
+                                        alpha=0.7 if args.interactive is not None else 0),
                               arrowprops=dict(arrowstyle='-',
                                               connectionstyle='arc3,rad=0',
                                               color='gray', linewidth=1, alpha=0.5),
@@ -1673,10 +1751,10 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
         for p in args.clean_panel:
             if p == 'D':
                 draw_panel_D = True
-            elif len(p) == 2 and p[0] in 'ABC' and p[1] in 'abcdef':
+            elif len(p) == 2 and p[0] in 'ABC' and p[1] in 'abcdefg':
                 panel_filter.add(p)
             else:
-                print(f"  [WARN] 无效面板标识 '{p}' (应为 Aa-Af/Ba-Bf/Ca-Cf/D)")
+                print(f"  [WARN] 无效面板标识 '{p}' (应为 Aa-Ag/Ba-Bg/Ca-Cg/D)")
 
     def _should_draw(hk, panel_letter):
         if panel_filter is None:
@@ -1741,7 +1819,16 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
             xytext = self.annotation.get_position()
             dx = xytext[0] - xy[0]
             dy = xytext[1] - xy[1]
-            print(f"  ✅ {self.panel_key}@{self.structure_name}:{dx:.4f},{dy:.2f}")
+            key = f'{self.panel_key}@{self.structure_name}'
+            print(f"  ✅ {key}:{dx:.4f},{dy:.2f}")
+            # 实时写回 JSON 文件
+            offset_map[(self.panel_key, self.structure_name)] = (dx, dy)
+            try:
+                _data = {f'{p}@{s}': list(v) for (p, s), v in offset_map.items()}
+                with open(_offsets_path, 'w', encoding='utf-8') as _f:
+                    _json.dump(_data, _f, ensure_ascii=False, indent=2)
+            except Exception as _e:
+                print(f"  [WARN] 保存偏移失败: {_e}")
 
     # ---- 面板绘制总数统计 ----
     n_drawn = 0
@@ -1819,7 +1906,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
             plt.tight_layout()
             fname_a = f'{htag}_clean_a.png'
 
-            if args.interactive:
+            if _is_interactive(f'{hk}a'):
                 # Save initial version first
                 fig.savefig(f'{output_dir}/{fname_a}', dpi=300,
                             bbox_inches='tight', transparent=True)
@@ -1878,7 +1965,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
             plt.tight_layout()
             fname_b = f'{htag}_clean_b.png'
 
-            if args.interactive:
+            if _is_interactive(f'{hk}b'):
                 fig.savefig(f'{output_dir}/{fname_b}', dpi=300,
                             bbox_inches='tight', transparent=True)
                 _drags = []                       # keep refs → prevent GC
@@ -1939,7 +2026,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
             plt.tight_layout()
             fname_c = f'{htag}_clean_c.png'
 
-            if args.interactive:
+            if _is_interactive(f'{hk}c'):
                 fig.savefig(f'{output_dir}/{fname_c}', dpi=300,
                             bbox_inches='tight', transparent=True)
                 _drags = []                       # keep refs → prevent GC
@@ -2074,7 +2161,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
             plt.tight_layout()
             fname_d = f'{htag}_clean_d.png'
 
-            if args.interactive:
+            if _is_interactive(f'{hk}d'):
                 fig.savefig(f'{output_dir}/{fname_d}', dpi=300,
                             bbox_inches='tight', transparent=True)
                 _drags = []
@@ -2185,7 +2272,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
             plt.tight_layout()
             fname_e = f'{htag}_clean_e.png'
 
-            if args.interactive:
+            if _is_interactive(f'{hk}e'):
                 fig.savefig(f'{output_dir}/{fname_e}', dpi=300,
                             bbox_inches='tight', transparent=True)
                 _drags = []
@@ -2248,7 +2335,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
             plt.tight_layout()
             fname_f = f'{htag}_clean_f_size_effect.png'
 
-            if args.interactive:
+            if _is_interactive(f'{hk}f'):
                 fig.savefig(f'{output_dir}/{fname_f}', dpi=300,
                             bbox_inches='tight', transparent=True)
                 _drags = []
@@ -2271,106 +2358,199 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
             plt.close()
             print(f'  [OK] {htag} (f) Bc2 size-effect: {output_dir}/{fname_f}')
 
-    # ================================================================
-    # (D) 多元回归总结热图 — 跨假设比较 (大写 D)
-    # ================================================================
+        # ============================================================
+        # (g) 单变量 R² 散点图 — 两张独立图
+        #     g_adh:  adh → T   文件名: hypothesisX_clean_g_adh.png
+        #     g_size: size → T  文件名: hypothesisX_clean_g_size.png
+        #   R² = r²（单变量OLS），显示在图例中，无文本框
+        # ============================================================
+        if _should_draw(hk, 'g'):
+            x_adh_g  = v_clean[a['adh_col']].values.astype(float)
+            x_size_g = v_clean[a['size_col']].values.astype(float)
+            y_g      = v_clean[a['temp_col']].values.astype(float)
+
+            size_label_map_g = {
+                'nMetal': '$n_{Metal}$',
+                'n_PtSn': '$n_{PtSn}$',
+                'n_SnO':  '$n_{SnO}$',
+            }
+            size_axis_label_g = size_label_map_g.get(a['size_col'], a['size_col'])
+
+            # ---- 辅助: 画单变量散点图并保存 ----
+            def _draw_univar(x_vals, y_vals, x_label, panel_suffix, xcol, ycol):
+                fig_u, ax_u = plt.subplots(figsize=(10, 8))
+                fig_u.patch.set_alpha(0)
+                x_plot_u = np.linspace(x_vals.min(), x_vals.max(), 200)
+                y_fit_u, ci_u = _confidence_band(x_vals, y_vals, x_plot_u)
+                r_u, p_u = stats.pearsonr(x_vals, y_vals)
+                r2_u = r_u ** 2  # 单变量 R² = r²，符号唯一
+                ax_u.fill_between(x_plot_u, y_fit_u - ci_u, y_fit_u + ci_u,
+                                  alpha=0.18, color=a['color_clean'])
+                _parts = []
+                if not args.no_r:
+                    _parts.append(f'r = {r_u:+.2f}')
+                if not args.no_r2:
+                    _parts.append(f'$R^2$ = {r2_u:.2f}')
+                fit_lbl_u = ',  '.join(_parts) if _parts else '_nolegend_'
+                _fit_line, = ax_u.plot(x_plot_u, y_fit_u, '-', color=a['color_clean'],
+                                       lw=4, label=fit_lbl_u)
+                ax_u.scatter(x_vals, y_vals, s=200, c=a['color_clean'],
+                             edgecolors='black', linewidths=2, alpha=0.85, zorder=5)
+                anns_u, names_u = _annotate_clean(ax_u, v_clean, xcol, ycol,
+                                                  panel_key=f'{hk}g_{panel_suffix}')
+                # 散点说明图例项: Pt_xSn_yO_z  (始终显示)
+                import matplotlib.lines as _mlines
+                _dot_handle = _mlines.Line2D(
+                    [], [], linestyle='none',
+                    marker='o', markersize=14,
+                    markerfacecolor=a['color_clean'],
+                    markeredgecolor='black', markeredgewidth=1.5,
+                    label=r'$\mathrm{Pt}_x\mathrm{Sn}_y\mathrm{O}_z$')
+                _leg_handles = [_dot_handle]
+                if _parts:   # 有统计量: 追加拟合线句柄
+                    _leg_handles.append(_fit_line)
+                ax_u.legend(handles=_leg_handles,
+                            loc='best', fontsize=22, frameon=False,
+                            prop={'family': 'Arial'})
+                _style_clean_ax(ax_u, x_label, temp_label, x_vals, y_vals,
+                                user_xticks=xt_map.get((hk, 'g')),
+                                user_yticks=yt_map.get((hk, 'g')))
+                plt.tight_layout()
+                fname_u = f'{htag}_clean_g_{panel_suffix}.png'
+                if _is_interactive(f'{hk}g-{panel_suffix}'):
+                    fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
+                                  bbox_inches='tight', transparent=True)
+                    _drags = []
+                    for ann, sn in zip(anns_u, names_u):
+                        da = DraggableAnnotation(ann, sn, f'{hk}g_{panel_suffix}')
+                        da.connect()
+                        _drags.append(da)
+                    print(f'\n  🎯 交互模式: {hk}(g_{panel_suffix}) — 拖动标签')
+                    plt.show()
+                    for ann in anns_u:
+                        ann.get_bbox_patch().set_alpha(0)
+                        ann.get_bbox_patch().set_edgecolor('none')
+                    fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
+                                  bbox_inches='tight', transparent=True)
+                else:
+                    fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
+                                  bbox_inches='tight', transparent=True)
+                plt.close()
+                print(f'  [OK] {htag} (g_{panel_suffix}) univariate R²: {output_dir}/{fname_u}')
+                return fname_u
+
+            _draw_univar(x_adh_g,  y_g, adh_label,         'adh',  a['adh_col'],  a['temp_col'])
+            _draw_univar(x_size_g, y_g, size_axis_label_g, 'size', a['size_col'], a['temp_col'])
+            n_drawn += 2
+
+
     if (panel_filter is None or draw_panel_D) and len(results_partial) >= 2:
         import matplotlib.colors as mcolors
 
         # ---- 构建数据矩阵 ----
-        # 行: 假设 A/B/C   列: 指标
-        col_keys = ['r_simple', 'r_partial', 'r_clean',
-                    'R2_mr', 'r_partial_adh', 'r_partial_size',
-                    'beta_adh', 'beta_size']
-        col_labels = [
-            '$r_{simple}$', '$r_{partial}$\n(full)', '$r_{partial}$\n(clean)',
-            '$R^2$', '$r_{adh}$', '$r_{size}$',
-            r'$\beta_{adh}$', r'$\beta_{size}$',
-        ]
-        # 对应 p 值的键 (用于显著性标注)
-        p_keys = ['p_simple', 'p_partial', 'p_clean',
-                  None, 'p_partial_adh', 'p_partial_size',
-                  'p_partial_adh', 'p_partial_size']
+        # 行: 假设 A/B/C   列: 指标 (去掉前三列简单/偏相关, 只保留回归指标)
+        # --heatmap-r2: 在最前面插入两列单变量 R²
+        if args.heatmap_r2:
+            col_keys = ['R2_adh_only', 'R2_size_only',
+                        'R2_mr', 'r_partial_adh', 'r_partial_size',
+                        'beta_adh', 'beta_size']
+            col_labels = [
+                '$R^2_{adh}$', '$R^2_{size}$',
+                '$R^2$', '$|r_{adh}|$', '$|r_{size}|$',
+                r'$|\beta_{adh}|$', r'$|\beta_{size}|$',
+            ]
+            p_keys = [None, None,
+                      None, 'p_partial_adh', 'p_partial_size',
+                      'p_partial_adh', 'p_partial_size']
+        else:
+            col_keys = ['R2_mr', 'r_partial_adh', 'r_partial_size',
+                        'beta_adh', 'beta_size']
+            col_labels = [
+                '$R^2$', '$|r_{adh}|$', '$|r_{size}|$',
+                r'$|\beta_{adh}|$', r'$|\beta_{size}|$',
+            ]
+            # 对应 p 值的键 (仅用于内部, 不显示星号)
+            p_keys = [None, 'p_partial_adh', 'p_partial_size',
+                      'p_partial_adh', 'p_partial_size']
 
-        n_rows = len(results_partial)
         n_cols = len(col_keys)
-        mat = np.full((n_rows, n_cols), np.nan)
-        sig_mat = [[''] * n_cols for _ in range(n_rows)]
         row_labels = []
 
-        for i, res in enumerate(results_partial):
-            # 行标签: 英文简写
+        # 行顺序: Tm (C) → T1 (A) → T2 (B)
+        ROW_ORDER = {'预期C': 0, '预期A': 1, '预期B': 2}
+        results_sorted = sorted(results_partial,
+                                key=lambda r: ROW_ORDER.get(r.get('label', ''), 99))
+        n_rows = len(results_sorted)
+        mat = np.full((n_rows, n_cols), np.nan)
+        sig_mat = [[''] * n_cols for _ in range(n_rows)]
+
+        for i, res in enumerate(results_sorted):
+            # 行标签: 温度名 + 界面类型标注
             if 'Type2' in res['adh']:
-                row_labels.append('A: $E_{adh}^1$ → $T_1$')
+                row_labels.append('$T_1$ (PtSn–SnO)')
             elif 'Type3' in res['adh']:
-                row_labels.append('B: $E_{adh}^2$ → $T_2$')
+                row_labels.append('$T_2$ (SnO–AlO)')
             else:
-                row_labels.append('C: $E_{adh}$ → $T_m$')
+                row_labels.append('$T_m$ (PtSn–AlO)')
 
             for j, ck in enumerate(col_keys):
                 val = res.get(ck, np.nan)
+                # r 和 β 列取绝对值，统一表达相关强度；R² 列本身≥0 不需要处理
+                _is_r2_col = ck.startswith('R2_')
+                if not _is_r2_col and not np.isnan(val):
+                    val = abs(val)
                 mat[i, j] = val
                 pk = p_keys[j]
                 if pk and pk in res:
                     sig_mat[i][j] = _sig_label(res[pk])
 
         # ---- 选择颜色映射 ----
-        # r / β 列用 diverging (RdBu_r), R² 列用 sequential (YlOrRd)
-        # 统一用 RdBu_r, 范围 [-1, +1] (R² 列裁到 [0, 1])
-        cmap_div = plt.cm.RdBu_r
+        # 全部列统一用 sequential (YlOrRd)，范围 [0, VMAX]
+        # 默认 VMAX=1.0 截断 |β|>1；可用 --heatmap-vmax 1.5 扩展
         cmap_seq = plt.cm.YlOrRd
+        VMAX = args.heatmap_vmax
+
+        # ---- 自适应图宽: 5列→10, 7列→13 ----
+        fig_width  = 10 + 3 * int(args.heatmap_r2)  # 10 or 13
+        val_fs     = 18 if not args.heatmap_r2 else 15  # 数值字号
+        col_lbl_fs = 16 if not args.heatmap_r2 else 13  # 列标题字号
 
         # ---- 绘图 ----
-        fig, ax = plt.subplots(figsize=(14, 4.5))
+        fig, ax = plt.subplots(figsize=(fig_width, 4.5))
         fig.patch.set_alpha(0)
-
-        # 自定义绘制每个格子 (因为 R² 列色标不同)
-        r2_col_idx = col_keys.index('R2_mr')
 
         for i in range(n_rows):
             for j in range(n_cols):
                 val = mat[i, j]
                 if np.isnan(val):
                     color = 'white'
-                elif j == r2_col_idx:
-                    # R² 用 sequential: 0→白, 1→深橙
-                    color = cmap_seq(val)
                 else:
-                    # r/β 用 diverging: -1→蓝, 0→白, +1→红
-                    color = cmap_div((val + 1) / 2)
+                    color = cmap_seq(min(val / VMAX, 1.0))
 
                 rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
                                      facecolor=color, edgecolor='white',
                                      linewidth=2)
                 ax.add_patch(rect)
 
-                # 文字颜色: 深色背景用白字
-                if j == r2_col_idx:
-                    text_color = 'white' if val > 0.6 else 'black'
-                else:
-                    text_color = 'white' if abs(val) > 0.6 else 'black'
+                # 文字颜色: 深色背景用白字 (阈值按 VMAX 比例换算)
+                text_color = 'white' if val > VMAX * 0.55 else 'black'
 
-                # 数值文本
-                if args.no_stars:
-                    txt = f'{val:+.2f}' if j != r2_col_idx else f'{val:.2f}'
-                else:
-                    sig = sig_mat[i][j]
-                    if j == r2_col_idx:
-                        txt = f'{val:.2f}'
-                    elif sig and sig != 'ns':
-                        txt = f'{val:+.2f}\n{sig}'
-                    else:
-                        txt = f'{val:+.2f}'
+                # 数值文本 (全部正值，不显示符号)
+                txt = f'{val:.2f}'
 
                 ax.text(j, i, txt, ha='center', va='center',
-                        fontsize=18, fontfamily='Arial', fontweight='bold',
+                        fontsize=val_fs, fontfamily='Arial', fontweight='bold',
                         color=text_color)
+
+        # --heatmap-r2: 在第2列与第3列之间画分隔竖线 (单变量 | 多元)
+        if args.heatmap_r2:
+            ax.axvline(x=1.5, color='#555555', linewidth=2.0, linestyle='--', alpha=0.7)
 
         # 坐标轴设置
         ax.set_xlim(-0.5, n_cols - 0.5)
         ax.set_ylim(-0.5, n_rows - 0.5)
         ax.set_xticks(range(n_cols))
-        ax.set_xticklabels(col_labels, fontsize=16, fontfamily='Arial',
+        ax.set_xticklabels(col_labels, fontsize=col_lbl_fs, fontfamily='Arial',
                            ha='center')
         ax.xaxis.set_ticks_position('top')
         ax.xaxis.set_label_position('top')
@@ -2378,35 +2558,22 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
         ax.set_yticklabels(row_labels, fontsize=20, fontfamily='Arial')
         ax.invert_yaxis()
 
-        # 分隔线: r 类指标 vs 回归指标
-        ax.axvline(x=2.5, color='black', lw=2.5, zorder=10)
-
         # 边框
         for spine in ax.spines.values():
             spine.set_linewidth(2)
             spine.set_color('black')
         ax.tick_params(axis='both', length=0)
 
-        # ---- 双色标 ----
+        # ---- 单色标 (统一 sequential) ----
         from mpl_toolkits.axes_grid1 import make_axes_locatable
         divider = make_axes_locatable(ax)
 
-        # 左色标: diverging (r/β)
-        cax_left = divider.append_axes("bottom", size="8%", pad=0.5)
-        norm_div = mcolors.Normalize(vmin=-1, vmax=1)
-        sm_div = plt.cm.ScalarMappable(cmap=cmap_div, norm=norm_div)
-        sm_div.set_array([])
-        cbar_div = plt.colorbar(sm_div, cax=cax_left, orientation='horizontal')
-        cbar_div.set_label('$r$ / $\\beta$', fontsize=18, fontfamily='Arial')
-        cbar_div.ax.tick_params(labelsize=14)
-
-        # 右色标: sequential (R²) — 放在右边
         cax_right = divider.append_axes("right", size="3%", pad=0.3)
-        norm_seq = mcolors.Normalize(vmin=0, vmax=1)
+        norm_seq = mcolors.Normalize(vmin=0, vmax=VMAX)
         sm_seq = plt.cm.ScalarMappable(cmap=cmap_seq, norm=norm_seq)
         sm_seq.set_array([])
         cbar_seq = plt.colorbar(sm_seq, cax=cax_right, orientation='vertical')
-        cbar_seq.set_label('$R^2$', fontsize=18, fontfamily='Arial')
+        cbar_seq.set_label('strength', fontsize=16, fontfamily='Arial')
         cbar_seq.ax.tick_params(labelsize=14)
 
         plt.tight_layout()
@@ -2417,10 +2584,103 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
         plt.close()
         print(f'  [OK] (D) summary heatmap: {output_dir}/{fname_D}')
 
-    if args.interactive:
+        # ================================================================
+        # (D2) 单变量 r + R² heatmap
+        #      列: R²_adh | r_adh(univ) | R²_size | r_size(univ) | r_partial(adh) | r_partial(size)
+        #      R² 列: sequential (YlOrRd, 0→1)
+        #      r  列: 分歧色标 (RdBu_r, -1→+1), 数值带显著性星号
+        #      虚线分隔: univ组 | partial组
+        #      行: 同 (D)
+        # ================================================================
+        col_keys_r  = ['R2_adh_only', 'r_adh_univ',
+                       'R2_size_only', 'r_size_univ']
+        col_labels_r = [r'$R^2_{adh}$',  r'$|r_{adh}|$',
+                        r'$R^2_{size}$', r'$|r_{size}|$']
+        p_keys_r    = [None, None, None, None]   # 不显示星号
+        # 标记哪些列是 R²（sequential 色），哪些是 r（分歧色）
+        is_r2_col_r = [True, False, True, False]
+
+        n_cols_r = len(col_keys_r)
+        mat_r    = np.full((n_rows, n_cols_r), np.nan)
+        sig_mat_r = [[''] * n_cols_r for _ in range(n_rows)]
+
+        for i, res in enumerate(results_sorted):
+            for j, ck in enumerate(col_keys_r):
+                val = res.get(ck, np.nan)
+                mat_r[i, j] = val          # R² 本身≥0；r 保留正负号
+                pk = p_keys_r[j]
+                if pk and pk in res:
+                    sig_mat_r[i][j] = _sig_label(res[pk])
+
+        # 两套色标
+        cmap_seq_r = plt.cm.YlOrRd          # R² 列: 0→1 sequential
+        VLIM_R = 1.0
+
+        # 图宽: 4列 → 9，R² 和 |r| 统一用 YlOrRd sequential
+        fig_r, ax_r2 = plt.subplots(figsize=(9, 4.5))
+        fig_r.patch.set_alpha(0)
+
+        for i in range(n_rows):
+            for j in range(n_cols_r):
+                val = mat_r[i, j]
+                # r 列取绝对值参与着色
+                disp_val = val if is_r2_col_r[j] else abs(val)
+                if np.isnan(disp_val):
+                    color = 'white'
+                else:
+                    color = cmap_seq_r(min(disp_val / VLIM_R, 1.0))
+
+                rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
+                                     facecolor=color, edgecolor='white', linewidth=2)
+                ax_r2.add_patch(rect)
+
+                text_color = 'white' if disp_val > 0.55 else 'black'
+                # R² 和 |r| 均显示绝对值，无符号，2位小数
+                txt = f'{disp_val:.2f}'
+                ax_r2.text(j, i, txt, ha='center', va='center',
+                           fontsize=17, fontfamily='Arial', fontweight='bold',
+                           color=text_color)
+
+        # 虚线分隔: adh组(R²+|r|) | size组(R²+|r|)
+        ax_r2.axvline(x=1.5, color='#444444', linewidth=2.0, linestyle='--', alpha=0.8)
+
+        ax_r2.set_xlim(-0.5, n_cols_r - 0.5)
+        ax_r2.set_ylim(-0.5, n_rows - 0.5)
+        ax_r2.set_xticks(range(n_cols_r))
+        ax_r2.set_xticklabels(col_labels_r, fontsize=15, fontfamily='Arial', ha='center')
+        ax_r2.xaxis.set_ticks_position('top')
+        ax_r2.xaxis.set_label_position('top')
+        ax_r2.set_yticks(range(n_rows))
+        ax_r2.set_yticklabels(row_labels, fontsize=20, fontfamily='Arial')
+        ax_r2.invert_yaxis()
+        for spine in ax_r2.spines.values():
+            spine.set_linewidth(2); spine.set_color('black')
+        ax_r2.tick_params(axis='both', length=0)
+
+        # 单色标 (统一 sequential)
+        from mpl_toolkits.axes_grid1 import make_axes_locatable as _mad
+        div_r = _mad(ax_r2)
+        cax_r = div_r.append_axes("right", size="3%", pad=0.3)
+        norm_r = mcolors.Normalize(vmin=0, vmax=VLIM_R)
+        sm_r   = plt.cm.ScalarMappable(cmap=cmap_seq_r, norm=norm_r)
+        sm_r.set_array([])
+        cbar_r = plt.colorbar(sm_r, cax=cax_r, orientation='vertical')
+        cbar_r.set_label('strength', fontsize=14, fontfamily='Arial')
+        cbar_r.ax.tick_params(labelsize=12)
+
+        plt.tight_layout()
+        fname_D2 = 'partial_correlation_summary_heatmap_r.png'
+        fig_r.savefig(f'{output_dir}/{fname_D2}', dpi=300,
+                      bbox_inches='tight', transparent=True)
+        n_drawn += 1
+        plt.close()
+        print(f'  [OK] (D2) univariate-r heatmap: {output_dir}/{fname_D2}')
+
+    if args.interactive is not None:
         print('\n' + '=' * 60)
-        print('  ✅ 交互完成! 将上面输出的偏移量复制到 --clean-offsets:')
-        print('     --clean-offsets Bc@Pt8Sn3O2:0.5,-20 ...')
+        print(f'  ✅ 交互完成! 偏移量已自动保存到 {args.offsets_file}')
+        print(f'     下次运行时将自动加载, 无需 --clean-offsets')
+        print(f'     如需手动覆盖某个点: --clean-offsets PANEL@Structure:dx,dy')
         print('=' * 60)
 
     print(f'\n  [OK] --plot-clean: 共生成 {n_drawn} 张独立图 (PNG)')
