@@ -661,7 +661,8 @@ pH: 9-11 (NaOH 调节)
 ## � 发现 5：粘附能驱动分区温度——统计力学视角
 
 > 本节记录 `analyze_adhesion_vs_partition.py` 分析结果。  
-> 运行参数：`--consistent-outliers --exclude O3Sn4Pt2 Pt3Sn3O2 Pt7Sn6O1 Sn1Pt2O1 --exclude-c Pt8Sn0 --threshold 999`
+> 运行参数：`--consistent-outliers --exclude O3Sn4Pt2 Pt3Sn3O2 Pt7Sn6O1 Sn1Pt2O1 --exclude-c Pt8Sn0 --threshold 999`  
+> 粘附能均使用 **Eadh_last**（AIMD 高温弛豫后的真实吸附能）。
 
 ---
 
@@ -681,22 +682,25 @@ pH: 9-11 (NaOH 调节)
 
 #### 单变量相关（不控制尺寸）
 
-| 假说 | Pearson r（adh vs T） | 显著性 | $R^2$（单变量） |
-|------|--------------------|-------|----------------|
-| **C** | −0.90 | *** | 0.81 |
-| **A** | −0.82 | *** | 0.67 |
-| **B** | −0.19 | ns   | 0.04 |
+| 假说 | Pearson r（adh vs T） | 显著性 | $R^2$（单变量，adh） | $R^2$（单变量，size） |
+|------|--------------------|-------|---------------------|----------------------|
+| **C** | −0.90 | *** | 0.81 | 0.38 |
+| **A** | −0.94 | *** | 0.886 | 0.657 |
+| **B** | −0.31 | ns   | 0.093 | 0.860 |
+| **B'**（T3 归一化） | −0.31 | ns   | 0.093 | 0.860 |
 
-- C 和 A 的单变量相关均高度显著，说明粘附能和温度在原始数据中已呈强负相关
-- B 的单变量相关不显著，说明 SnO 粘附能本身不能解释 $T_{onset,O}$ 的变化
+- C 和 A 的单变量粘附能相关均高度显著，说明粘附能和温度在原始数据中已呈强负相关
+- B/B' 的粘附能单变量相关不显著，但尺寸（$n_{SnO}$）单变量 $R^2 = 0.86$，尺寸效应极强
+- B 和 B' 的区别仅在于 Y 轴：B 用 $T_{onset,O}$，B' 用 $T_{onset,O}/n_O$（消除 nO 尺寸效应）
 
 #### 多元回归（同时控制尺寸变量）
 
 | 假说 | $R^2$（多元） | $r_{partial}$（adh） | $\beta_{adh}$（标准化） | $\beta_{size}$ | 主导因素 |
 |------|-------------|---------------------|----------------------|----------------|---------|
 | **C** | 0.82 | −0.84*** | −0.83 | −0.11 ns | **粘附能** ✓ |
-| **A** | 0.90 | −0.85*** | −1.18 | +0.26 ns  | **粘附能** ✓ |
-| **B** | 0.77 | +0.20 ns  | +0.11 | −0.92***  | **尺寸** ✗ |
+| **A** | 0.903 | −0.847*** | −1.238 | +0.324 ns | **粘附能** ✓ |
+| **B** | 0.768 | +0.204 ns | +0.113 | −0.923*** | **尺寸** ✗ |
+| **B'** | 0.880 | +0.374 ns | +0.158 | −1.001*** | **尺寸** ✗ |
 
 > $\beta$：标准化回归系数（无量纲），反映相对贡献大小  
 > $r_{partial}$：偏相关系数，控制另一变量后粘附能的独立线性关系  
@@ -723,9 +727,9 @@ Pt-Sn 团簇与载体结合越紧密
 - 结论：纯金属团簇中，粘附能是熔点的**唯一决定性因素**
 
 **A 扩展到含 SnO 体系**（引入氧化物界面层后）：
-- 偏相关 $r_{partial} = -0.85$（$p < 0.001$），粘附能效应在含 SnO 体系中同样成立
-- $\beta_{adh} = -1.18$（超标准化），说明粘附能的单位标准差变化对 $T_1$ 的影响**超过 1σ**
-- $\beta_{size} = +0.26$（ns）→ 尺寸无独立贡献
+- 偏相关 $r_{partial} = -0.847$（$p < 0.001$），粘附能效应在含 SnO 体系中同样成立
+- $\beta_{adh} = -1.238$（超标准化），说明粘附能的单位标准差变化对 $T_1$ 的影响**超过 1σ**
+- $\beta_{size} = +0.324$（ns）→ 尺寸无独立贡献
 - 结论：**粘附能 → 金属熔化是跨体系的普适规律**，氧化物界面层的引入不改变这一机制
 
 #### 路径 B：尺寸主导 O 迁移（动力学主导）
@@ -741,8 +745,8 @@ SnO 层
 T_onset,O 越低（某个 O 以更低温度触发迁移）
 ```
 
-- 控制 $n_{SnO}$ 后，粘附能偏相关 = +0.20（ns）→ **粘附强度无独立贡献**
-- $\beta_{size}(n_{SnO}) = -0.92$（$p < 0.001$），整体 $R^2 = 0.77$
+- 控制 $n_{SnO}$ 后，粘附能偏相关 = +0.204（ns）→ **粘附强度无独立贡献**
+- $\beta_{size}(n_{SnO}) = -0.923$（$p < 0.001$），整体 $R^2 = 0.768$（B）/ $0.880$（B'，$T_3$ 归一化）
 - 物理机制：每原子 SnO 粘附能（Type3/at）量化的是**平均**键强度，但 O 迁移是**局部**单原子事件——只需一个 O 克服势垒即可触发，因此"可迁移 O 原子数目"比"平均粘附强度"更关键
 - 结论：**$T_{onset,O}$ 的决定因素是 SnO 层规模（$n_{SnO}$），而非每原子粘附强度**
 
@@ -786,22 +790,31 @@ O 迁移是尺寸驱动的统计学效应，而非热力学效应（B）。
 
 ```
 预期C: Eadh/atom (Pt₈Snₓ) → T_m
-  │ r_simple(adh)  = -0.900***  r_simple(size) = -0.838***
+  │ r_simple(adh)  = -0.900***  r_simple(size) = -0.619*
   │ 多元 R²        = 0.82
-  │ r_partial(adh) = -0.838***  β_adh = -0.83
-  │ r_partial(size)= -0.194 ns  β_size= -0.11
+  │ r_partial(adh) = -0.838***  β_adh = -0.834
+  │ r_partial(size)= -0.194 ns  β_size= -0.107
 
 预期A: Type2/at (÷n_PtSn) → T1_lindemann
-  │ r_simple(adh)  = -0.818***  r_simple(size) = -0.483*
-  │ 多元 R²        = 0.90
-  │ r_partial(adh) = -0.848***  β_adh = -1.18
-  │ r_partial(size)= +0.329 ns  β_size= +0.26
+  │ R²(adh only)   = 0.886      r_simple = -0.941***
+  │ R²(size only)  = 0.657      r_simple = -0.810***
+  │ 多元 R²        = 0.903
+  │ r_partial(adh) = -0.847***  β_adh = -1.238
+  │ r_partial(size)= +0.384 ns  β_size= +0.324
 
 预期B: Type3/at (÷n_SnO) → T_onset_O
-  │ r_simple(adh)  = -0.190 ns  r_simple(size) = +0.081 ns
-  │ 多元 R²        = 0.77
-  │ r_partial(adh) = +0.199 ns  β_adh = +0.11
-  │ r_partial(size)= -0.862***  β_size= -0.92
+  │ R²(adh only)   = 0.099      r_simple = -0.314 ns
+  │ R²(size only)  = 0.758      r_simple = -0.871***
+  │ 多元 R²        = 0.768
+  │ r_partial(adh) = +0.204 ns  β_adh = +0.113
+  │ r_partial(size)= -0.862***  β_size= -0.923
+
+预期B': Type3/at (÷n_SnO) → T3_onset_O (÷nO 归一化)
+  │ R²(adh only)   = 0.093      r_simple = -0.305 ns
+  │ R²(size only)  = 0.860      r_simple = -0.927***
+  │ 多元 R²        = 0.880
+  │ r_partial(adh) = +0.374 ns  β_adh = +0.158
+  │ r_partial(size)= -0.931***  β_size= -1.001
 ```
 
 ---
@@ -984,9 +997,9 @@ PtₓSnᵧOₖ/Al₂O₃ 体系中存在三个不同的界面，对应三种粘�
 |------|------|----------|
 | **Eadh_first** | 初始构型（DFT 优化后的 0 K 结构）的粘附能 (eV) | 理想状态下的粘附强度 |
 | **Eadh_last** | 最终构型（AIMD 高温弛豫后）的粘附能 (eV) | 经历热运动后的粘附强度 |
-| **Eadh_avg** | = (Eadh_first + Eadh_last) / 2 | 平均粘附能，用于回归分析 |
-| **Type2_per_atom** | = Type2_Eadh_avg / n_PtSn (eV/atom) | **金属簇每原子粘附能**，消除尺寸效应后的本征粘附强度 |
-| **Type3_per_atom** | = Type3_Eadh_avg / n_SnO (eV/atom) | **SnO 层每原子粘附能**，消除尺寸效应后的本征粘附强度 |
+| **Eadh_avg** | = (Eadh_first + Eadh_last) / 2 | 平均粘附能（仅供参考，不用于回归分析） |
+| **Type2_per_atom** | = Type2_Eadh_last / n_PtSn (eV/atom) | **金属簇每原子粘附能**，消除尺寸效应后的本征粘附强度（使用 Eadh_last） |
+| **Type3_per_atom** | = Type3_Eadh_last / n_SnO (eV/atom) | **SnO 层每原子粘附能**，消除尺寸效应后的本征粘附强度（使用 Eadh_last） |
 
 > **为什么用每原子粘附能？** 总粘附能 Eadh 和团簇大小高度相关（大团簇有更多原子参与界面结合，Eadh 绝对值更大）。用 Eadh/n_atom 归一化后，才能比较不同大小团簇的本征界面结合强度。
 
@@ -1159,21 +1172,28 @@ $$r_{partial}^2 = \frac{\Delta R^2_{adh}}{1 - R^2_{size}}$$
 | 方案 | k | n | 排除结构 |
 |------|---|---|---------|
 | **全集** | 0 | 19 | （无） |
-| **当前方案** | 4 | 15 | O3Sn4Pt2, Sn1Pt2O1, Pt3Sn3O2, Pt7Sn5O1 |
+| **当前方案** | 4 | 15 | O3Sn4Pt2, Sn1Pt2O1, Pt3Sn3O2, Pt7Sn6O1 |
 
 **假设 A** (Type2/at → T1_lindemann, 控制 n_PtSn):
 
 | 方案 | n | r_partial(adh→T\|size) | R²_multi | β_adh |
 |------|---|----------------------|----------|-------|
-| 全集 | 19 | −0.483 \* | 0.670 | −0.863 |
-| k=4 (clean) | 15 | **−0.879\*\*\*** | **0.911** | **−1.301** |
+| 全集 | 19 | −0.423 ns | 0.503 | −0.709 |
+| k=4 (clean) | 15 | **−0.847\*\*\*** | **0.903** | **−1.238** |
 
 **假设 B** (n_SnO → T_onset_O, 控制 Type3/at ⭐):
 
 | 方案 | n | r_partial(size→T\|adh) | R²_multi | β_size |
 |------|---|----------------------|----------|--------|
-| 全集 | 19 | −0.542（推算）| 0.257 | −0.542 |
-| k=4 (clean) | 15 | **−0.876\*\*\*** | **0.775** | **−1.003\*\*\*** |
+| 全集 | 19 | −0.083 ns | 0.036 | +0.057 |
+| k=4 (clean) | 15 | **−0.862\*\*\*** | **0.768** | **−0.923\*\*\*** |
+
+**假设 B'** (n_SnO → T3_onset_O, 控制 Type3/at, T3=T_onset_O/nO):
+
+| 方案 | n | r_partial(size→T\|adh) | R²_multi | β_size |
+|------|---|----------------------|----------|--------|
+| 全集 | 19 | +0.057 ns | 0.033 | | 
+| k=4 (clean) | 15 | **−0.931\*\*\*** | **0.880** | **−1.001\*\*\*** |
 
 **假设 C** (Eadh/atom → Tm, 控制 nMetal, Pt₈Snₓ 系列):
 
@@ -1188,19 +1208,20 @@ $$r_{partial}^2 = \frac{\Delta R^2_{adh}}{1 - R^2_{size}}$$
 | **O3Sn4Pt2** | 2 | 4 | 3 | Pt 极少但 SnO 层极大 (n_SnO=7)，比例失衡 |
 | **Sn1Pt2O1** | 2 | 1 | 1 | 最小团簇，热力学行为偏离大团簇规律 |
 | **Pt3Sn3O2** | 3 | 3 | 2 | A 和 B 残差均偏大 |
-| **Pt7Sn5O1** | 7 | 5 | 1 | n_PtSn=10 较大但 n_SnO=3 较小，T 值异常 |
+| **Pt7Sn6O1** | 7 | 6 | 1 | n_SnO=2 极小但 Type3/at = −29.7 eV/atom 极端异常（远超均值），强烈拉偏 B/B' 回归 |
 
 #### 统一物理图景
 
 ```text
   金属熔化 (T1_lindemann):  集体热力学过程
     → 粘附能(每原子)越强, 越难集体失序 → 粘附能主导
-    → A: r_partial(adh→T|size) = −0.88***, β_adh = −1.30
-    → C: r_partial(adh→T|size) = −0.95***, β_adh = −0.95
+    → A: r_partial(adh→T|size) = −0.847***, β_adh = −1.238
+    → C: r_partial(adh→T|size) = −0.838***, β_adh = −0.834
 
   O迁移起始 (T_onset_O):   局部动力学事件
     → SnO层越大, 出现低势垒路径的概率越高 → 尺寸主导
-    → B: r_partial(size→T|adh) = −0.88***, β_size = −1.00
+    → B:  r_partial(size→T|adh) = −0.862***, β_size = −0.923
+    → B': r_partial(size→T|adh) = −0.931***, β_size = −1.001 (T3归一化，更纯净)
 
   T1 = f(粘附强度) ← 集体热力学
   T_onset_O = f(n_SnO)  ← 局部统计力学
@@ -1209,8 +1230,16 @@ $$r_{partial}^2 = \frac{\Delta R^2_{adh}}{1 - R^2_{size}}$$
 #### 推荐运行命令
 
 ```bash
+# 完整运行（生成全部图表）
 python -X utf8 analyze_adhesion_vs_partition.py \
   --plot-clean --consistent-outliers \
-  --exclude O3Sn4Pt2 Pt3Sn3O2 Pt7Sn5O1 Sn1Pt2O1 \
-  --threshold 999
+  --exclude O3Sn4Pt2 Pt3Sn3O2 Pt7Sn6O1 Sn1Pt2O1 \
+  --exclude-c Pt8Sn0 --threshold 999
+
+# 对特定面板启用交互式标签拖动（可多个，关闭窗口自动保存到 label_offsets.json）
+python -X utf8 analyze_adhesion_vs_partition.py \
+  --plot-clean --consistent-outliers \
+  --exclude O3Sn4Pt2 Pt3Sn3O2 Pt7Sn6O1 Sn1Pt2O1 \
+  --exclude-c Pt8Sn0 --threshold 999 \
+  --interactive Ag-adh Bg-size "hypothesisB'g-size"
 ```

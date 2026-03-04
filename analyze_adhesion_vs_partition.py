@@ -45,7 +45,7 @@ parser.add_argument('--no-r2', action='store_true',
                     help='图例中不显示 R² 值')
 parser.add_argument('--exclude', nargs='*', default=None,
                     help='手动指定额外排除的体系 (空格分隔)\n'
-                         '  例: --exclude Sn1Pt2O1 Pt7Sn6O1')
+                         '  例: --exclude Sn1Pt2O1 O3Sn4Pt2 Pt3Sn3O2 Sn7Pt6O4')
 parser.add_argument('--consistent-outliers', action='store_true',
                     help='A/B使用一致的离群点集合 (取并集)\n'
                          '  默认: A/B各自独立检测离群点\n'
@@ -98,6 +98,11 @@ parser.add_argument('--offsets-file', default='label_offsets.json',
                          '  --interactive 模式下拖动后自动保存到该文件\n'
                          '  下次运行时自动读取, 无需再粘贴 --clean-offsets\n'
                          '  --clean-offsets 的值可覆盖文件中同名键')
+parser.add_argument('--export-temperatures', action='store_true',
+                    help='导出所有结构的温度汇总表到 T1_T2_summary.csv\n'
+                         '  T1 = T1_lindemann (Lindemann δ=0.1 阈值温度)\n'
+                         '  T2_B = T_onset_O (假说B用, 阈值 2.0/ps)\n'
+                         '  T2_Bprime = T3_onset_O=T_onset_O_perO (假说B\'用, 阈值 2.5/nO /ps)')
 args = parser.parse_args()
 
 # --------------------------------------------------------------------------
@@ -125,31 +130,33 @@ PARTITION_DATA = {
     # T1_kmeans: kmeans聚类确定的固相边界
     # T1_lindemann: Lindemann指数首次超过δ=0.1的温度
     # T2_kmeans: kmeans聚类确定的液相边界
-    # T_onset_O: 氧迁移起始温度 (avg_freq >= 2.0 /ps 的最低温度, 来自AIMD轨迹)
-    "Sn1Pt2O1": {"T1_kmeans": 750, "T2_kmeans": 1450, "T1_lindemann": 1719.47, "T_onset_O": 1200},
-    "Pt2Sn2O1": {"T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann": 1492.00, "T_onset_O": 1700},
-    "Pt3Sn2O1": {"T1_kmeans": 750, "T2_kmeans": 1200, "T1_lindemann": 1063.90, "T_onset_O": 1500},
-    "Sn3O2Pt2": {"T1_kmeans": 750, "T2_kmeans": 1400, "T1_lindemann": 1230.55, "T_onset_O": 1500},
-    "O3Sn4Pt2": {"T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann":  861.84, "T_onset_O": 1500},
-    "Pt3Sn3O2": {"T1_kmeans": 750, "T2_kmeans": 1300, "T1_lindemann":  849.52, "T_onset_O": 1600},
-    "Sn3Pt4O1": {"T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann":  617.20, "T_onset_O": 1600},
-    "Pt5Sn3O1": {"T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann":  585.42, "T_onset_O": 1500},
-    "Pt5Sn4O1": {"T1_kmeans": 750, "T2_kmeans": 1250, "T1_lindemann":  727.74, "T_onset_O": 1600},
-    "O2Pt4Sn6": {"T1_kmeans": 750, "T2_kmeans": 1300, "T1_lindemann":  490.69, "T_onset_O": 1300},
-    "Sn6Pt5O2": {"T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann":  537.64, "T_onset_O": 1400},
-    "Sn7Pt4O3": {"T1_kmeans": 800, "T2_kmeans": 1300, "T1_lindemann":  623.71, "T_onset_O": 1200},
-    "O3Pt5Sn7": {"T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann":  619.82, "T_onset_O": 1300},
-    "Pt7Sn5O1": {"T1_kmeans": 650, "T2_kmeans": 1150, "T1_lindemann":  542.90, "T_onset_O": 1600},
-    "Pt7Sn6O1": {"T1_kmeans": 600, "T2_kmeans": 1150, "T1_lindemann":  558.02, "T_onset_O": 1500},
-    "Pt6Sn5O2": {"T1_kmeans": 550, "T2_kmeans": 750, "T1_lindemann":  739.98, "T_onset_O": 1400},   # g-948-Pt6Sn5O2
-    "Pt6Sn6O3": {"T1_kmeans": 450, "T2_kmeans": 650, "T1_lindemann":  649.13, "T_onset_O": 1300},   # g-948-Pt6Sn6O3
-    "Sn7Pt6O4": {"T1_kmeans": 400, "T2_kmeans": 700, "T1_lindemann":  710.76, "T_onset_O": 1300},   # g-1051-Sn7Pt6O4
-    "O2Pt7Sn7": {"T1_kmeans": 750, "T2_kmeans": 1275, "T1_lindemann":  562.89, "T_onset_O": 1350},
+    # T_onset_O:      氧迁移起始温度 (avg_freq >= 2.0 /ps 的最低温度, 来自AIMD轨迹)
+    # T_onset_O_perO: 每O原子归一化迁移温度 (avg_freq >= 2.5/nO /ps, 由process_melting_summary.py计算)
+    #                 nO=1 结构与 T_onset_O 相同; nO>1 结构通常更低 (-100~-200K)
+    "Sn1Pt2O1": {"T1_kmeans": 750, "T2_kmeans": 1450, "T1_lindemann": 1719.47, "T_onset_O": 1200, "T_onset_O_perO": 1200},
+    "Pt2Sn2O1": {"T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann": 1492.00, "T_onset_O": 1700, "T_onset_O_perO": 1700},
+    "Pt3Sn2O1": {"T1_kmeans": 750, "T2_kmeans": 1200, "T1_lindemann": 1063.90, "T_onset_O": 1500, "T_onset_O_perO": 1600},
+    "Sn3O2Pt2": {"T1_kmeans": 750, "T2_kmeans": 1400, "T1_lindemann": 1230.55, "T_onset_O": 1500, "T_onset_O_perO": 1500},
+    "O3Sn4Pt2": {"T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann":  861.84, "T_onset_O": 1500, "T_onset_O_perO": 1300},
+    "Pt3Sn3O2": {"T1_kmeans": 750, "T2_kmeans": 1300, "T1_lindemann":  849.52, "T_onset_O": 1600, "T_onset_O_perO": 1600},
+    "Sn3Pt4O1": {"T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann":  617.20, "T_onset_O": 1600, "T_onset_O_perO": 1700},
+    "Pt5Sn3O1": {"T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann":  585.42, "T_onset_O": 1500, "T_onset_O_perO": 1600},
+    "Pt5Sn4O1": {"T1_kmeans": 750, "T2_kmeans": 1250, "T1_lindemann":  727.74, "T_onset_O": 1600, "T_onset_O_perO": 1600},
+    "O2Pt4Sn6": {"T1_kmeans": 750, "T2_kmeans": 1300, "T1_lindemann":  490.69, "T_onset_O": 1300, "T_onset_O_perO": 1300},
+    "Sn6Pt5O2": {"T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann":  537.64, "T_onset_O": 1400, "T_onset_O_perO": 1300},
+    "Sn7Pt4O3": {"T1_kmeans": 800, "T2_kmeans": 1300, "T1_lindemann":  623.71, "T_onset_O": 1200, "T_onset_O_perO": 1100},
+    "O3Pt5Sn7": {"T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann":  619.82, "T_onset_O": 1300, "T_onset_O_perO": 1100},
+    "Pt7Sn5O1": {"T1_kmeans": 650, "T2_kmeans": 1150, "T1_lindemann":  542.90, "T_onset_O": 1600, "T_onset_O_perO": 1600},
+    "Pt7Sn6O1": {"T1_kmeans": 600, "T2_kmeans": 1150, "T1_lindemann":  558.02, "T_onset_O": 1500, "T_onset_O_perO": 1600},
+    "Pt6Sn5O2": {"T1_kmeans": 550, "T2_kmeans": 750, "T1_lindemann":  739.98, "T_onset_O": 1400, "T_onset_O_perO": 1300},   # g-948-Pt6Sn5O2
+    "Pt6Sn6O3": {"T1_kmeans": 450, "T2_kmeans": 650, "T1_lindemann":  649.13, "T_onset_O": 1300, "T_onset_O_perO": 1200},   # g-948-Pt6Sn6O3
+    "Sn7Pt6O4": {"T1_kmeans": 400, "T2_kmeans": 700, "T1_lindemann":  710.76, "T_onset_O": 1300, "T_onset_O_perO": 1200},   # g-1051-Sn7Pt6O4
+    "O2Pt7Sn7": {"T1_kmeans": 750, "T2_kmeans": 1275, "T1_lindemann":  562.89, "T_onset_O": 1350, "T_onset_O_perO": 1300},
 }
 
 # 粘附能数据 (单位: eV)
-# Eadh_first: 初始构型的粘附能
-# Eadh_last: 最终构型的粘附能
+# Eadh_first: 团簇/SnO层放置到载体上但未弛豫的单点能 (初始构型, 仅作参考)
+# Eadh_last:  完全弛豫后的真实吸附能 (用于 per_atom 计算)
 
 # 类型1: Pt-Sn 和 O-Al2O3 的粘附能
 ADHESION_TYPE1 = {
@@ -322,13 +329,13 @@ def build_dataframe():
             row["Type3_Eadh_last"] = ADHESION_TYPE3[structure]["Eadh_last"]
             row["Type3_Eadh_avg"] = (row["Type3_Eadh_first"] + row["Type3_Eadh_last"]) / 2
         
-        # 计算每原子粘附能
-        # Type1: Pt-Sn / O-Al2O3 → 除以总金属原子数 nMetal = nPt + nSn
-        # Type2: Pt-Sn / SnO+Al2O3 → 除以 Pt-Sn 团簇原子数 n_PtSn = nPt + nSn - nSn_sno
-        # Type3: SnO / Al2O3 → 除以 SnO 层原子数 n_SnO = nSn_sno + nO_sno
+        # 计算每原子粘附能 (均使用 Eadh_last — 弛豫后真实吸附能)
+        # Type1: Pt-Sn / O-Al2O3   → Eadh_last / nMetal       (nMetal = nPt + nSn)
+        # Type2: Pt-Sn / SnO+Al2O3 → Eadh_last / n_PtSn       (n_PtSn = nPt + nSn - nSn_sno, 即纯Pt-Sn团簇原子数)
+        # Type3: SnO / Al2O3        → Eadh_last / n_SnO        (n_SnO  = nSn_sno + nO_sno, 即SnO层总原子数)
         if "nMetal" in row and row["nMetal"] > 0:
-            if "Type1_Eadh_avg" in row:
-                row["Type1_per_atom"] = row["Type1_Eadh_avg"] / row["nMetal"]
+            if "Type1_Eadh_last" in row:
+                row["Type1_per_atom"] = row["Type1_Eadh_last"] / row["nMetal"]
             
             if structure in SNO_COMPOSITION:
                 sno = SNO_COMPOSITION[structure]
@@ -339,11 +346,21 @@ def build_dataframe():
                 row["n_SnO"] = n_SnO
                 row["n_PtSn"] = n_PtSn
                 
-                if "Type2_Eadh_avg" in row and n_PtSn > 0:
-                    row["Type2_per_atom"] = row["Type2_Eadh_avg"] / n_PtSn
-                if "Type3_Eadh_avg" in row and n_SnO > 0:
-                    row["Type3_per_atom"] = row["Type3_Eadh_avg"] / n_SnO
+                if "Type2_Eadh_last" in row and n_PtSn > 0:
+                    row["Type2_per_atom"] = row["Type2_Eadh_last"] / n_PtSn
+                if "Type3_Eadh_last" in row and n_SnO > 0:
+                    row["Type3_per_atom"] = row["Type3_Eadh_last"] / n_SnO
         
+        # T3_onset_O: 每个 O 原子归一化的迁移起始温度
+        # 来源: PARTITION_DATA["T_onset_O_perO"] — 由 process_melting_summary.py 以阈值 2.5/nO /ps 重新计算
+        # 物理含义: 体系总迁移频率等效于每个O原子独立达到2.5/ps时的最低温度
+        # 与 T_onset_O/nO 的区别: 本字段是对原始AIMD数据重新判定，而非简单数学除法
+        t_perO = PARTITION_DATA.get(structure, {}).get("T_onset_O_perO", np.nan)
+        if not np.isnan(float(t_perO)) if t_perO is not None else True:
+            row["T3_onset_O"] = float(t_perO) if t_perO is not None else np.nan
+        else:
+            row["T3_onset_O"] = np.nan
+
         data.append(row)
     
     return pd.DataFrame(data)
@@ -369,6 +386,7 @@ def analyze_correlation(df):
         ("T1_lindemann", "T1_lindemann (δ=0.1)"),
         ("T2_kmeans", "T2_kmeans (液相边界)"),
         ("T_onset_O", "T_onset_O (O迁移起始)"),
+        ("T3_onset_O", "T3_onset_O (O迁移/nO归一化)"),
     ]
     
     results = []
@@ -643,36 +661,42 @@ def print_summary_table(df):
     
     # 表格1: 基本信息和温度边界
     print("\n  [1] 结构信息与分区边界温度")
-    print(f"  {'─' * 90}")
-    print(f"  {'结构':<12} │ {'nMetal':>6} │ {'T1_kmeans':>9} │ {'T1_lind':>8} │ {'T2_kmeans':>9} │ {'T_onset_O':>9} │ {'ΔT1':>6}")
-    print(f"  {'─' * 90}")
+    print(f"  {'─' * 105}")
+    print(f"  {'结构':<12} │ {'nO':>3} │ {'nMetal':>6} │ {'T1_kmeans':>9} │ {'T1_lind':>8} │ {'T2_kmeans':>9} │ {'T_onset_O':>9} │ {'T3_onset_O':>11} │ {'ΔT1':>6}")
+    print(f"  {'─' * 105}")
     
     for _, row in df.sort_values('T1_lindemann', ascending=False).iterrows():
         t1_km = row['T1_kmeans']
         t1_lind = row.get('T1_lindemann', 0)
         t2_km = row['T2_kmeans']
         t_onset = row.get('T_onset_O', np.nan)
+        t3_onset = row.get('T3_onset_O', np.nan)
+        n_O = row.get('nO', np.nan)
         delta_t1 = t1_lind - t1_km
         t_onset_str = f"{t_onset:>8.0f}K" if pd.notna(t_onset) else f"{'---':>9}"
-        print(f"  {row['Structure']:<12} │ {row['nMetal']:>6.0f} │ {t1_km:>8.0f}K │ {t1_lind:>7.0f}K │ {t2_km:>8.0f}K │ {t_onset_str} │ {delta_t1:>+5.0f}K")
+        t3_onset_str = f"{t3_onset:>9.1f}K" if pd.notna(t3_onset) else f"{'---':>11}"
+        n_O_str = f"{n_O:>3.0f}" if pd.notna(n_O) else f"{'?':>3}"
+        print(f"  {row['Structure']:<12} │ {n_O_str} │ {row['nMetal']:>6.0f} │ {t1_km:>8.0f}K │ {t1_lind:>7.0f}K │ {t2_km:>8.0f}K │ {t_onset_str} │ {t3_onset_str} │ {delta_t1:>+5.0f}K")
     
     # 表格2: 每原子粘附能 (使用正确的分母)
-    print(f"\n  [2] 每原子粘附能 (eV/atom)")
-    print(f"       Type1/at = Eadh_avg / nMetal (nPt+nSn)")
-    print(f"       Type2/at = Eadh_avg / n_PtSn (Pt-Sn团簇原子数)")
-    print(f"       Type3/at = Eadh_avg / n_SnO  (SnO层原子数)")
-    print(f"  {'─' * 115}")
-    print(f"  {'结构':<12} │ {'nMetal':>6} │ {'n_PtSn':>6} │ {'n_SnO':>5} │ {'T1_lind':>7} │ {'T_onset_O':>9} │ {'Type1/at':>9} │ {'Type2/at':>9} │ {'Type3/at':>9} │ 备注")
-    print(f"  {'─' * 115}")
+    print(f"\n  [2] 每原子粘附能 (eV/atom, 均使用 Eadh_last — 弛豫后真实吸附能)")
+    print(f"       Type1/at = Eadh_last / nMetal  (nMetal = nPt+nSn, 总金属原子数)")
+    print(f"       Type2/at = Eadh_last / n_PtSn  (n_PtSn = nPt+nSn-nSn_sno, 纯Pt-Sn团簇原子数)")
+    print(f"       Type3/at = Eadh_last / n_SnO   (n_SnO  = nSn_sno+nO_sno, SnO层总原子数)")
+    print(f"  {'─' * 130}")
+    print(f"  {'结构':<12} │ {'nO':>3} │ {'nMetal':>6} │ {'n_PtSn':>6} │ {'n_SnO':>5} │ {'T1_lind':>7} │ {'T_onset_O':>9} │ {'T3_onset_O':>11} │ {'Type1/at':>9} │ {'Type2/at':>9} │ {'Type3/at':>9} │ 备注")
+    print(f"  {'─' * 130}")
     
     for _, row in df.sort_values('T1_lindemann', ascending=False).iterrows():
         t1_lind = row.get('T1_lindemann', 0)
         t_onset = row.get('T_onset_O', np.nan)
+        t3_onset = row.get('T3_onset_O', np.nan)
         t1_per = row.get('Type1_per_atom', 0)
         t2_per = row.get('Type2_per_atom', 0)
         t3_per = row.get('Type3_per_atom', 0)
         n_PtSn = row.get('n_PtSn', row.get('nMetal', 0))
         n_SnO = row.get('n_SnO', 0)
+        n_O = row.get('nO', np.nan)
         
         # 根据T1_lindemann添加备注
         if t1_lind >= 1500:
@@ -685,7 +709,9 @@ def print_summary_table(df):
             note = "低熔点"
         
         t_onset_str = f"{t_onset:>8.0f}K" if pd.notna(t_onset) else f"{'---':>9}"
-        print(f"  {row['Structure']:<12} │ {row['nMetal']:>6.0f} │ {n_PtSn:>6.0f} │ {n_SnO:>5.0f} │ {t1_lind:>6.0f}K │ {t_onset_str} │ {t1_per:>9.3f} │ {t2_per:>9.3f} │ {t3_per:>9.3f} │ {note}")
+        t3_onset_str = f"{t3_onset:>9.1f}K" if pd.notna(t3_onset) else f"{'---':>11}"
+        n_O_str = f"{n_O:>3.0f}" if pd.notna(n_O) else f"{'?':>3}"
+        print(f"  {row['Structure']:<12} │ {n_O_str} │ {row['nMetal']:>6.0f} │ {n_PtSn:>6.0f} │ {n_SnO:>5.0f} │ {t1_lind:>6.0f}K │ {t_onset_str} │ {t3_onset_str} │ {t1_per:>9.3f} │ {t2_per:>9.3f} │ {t3_per:>9.3f} │ {note}")
 
 
 # ============================================================================
@@ -807,6 +833,15 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
             'temp_name': 'T_onset_O',
             'physical': 'SnO界面粘附决定O迁移温度',
             'color': 'seagreen', 'color_clean': 'teal',
+        },
+        {
+            'label': "预期B'",
+            'adh_col': 'Type3_per_atom', 'temp_col': 'T3_onset_O',
+            'size_col': 'n_SnO',
+            'adh_name': 'Type3/at (÷n_SnO)',
+            'temp_name': 'T3_onset_O (÷nO)',
+            'physical': "SnO粘附→O迁移(T3=T_onset/nO归一化，消除nO尺寸效应)",
+            'color': 'mediumpurple', 'color_clean': 'rebeccapurple',
         },
         {
             'label': '预期C',
@@ -1837,7 +1872,8 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
         a = res['analysis']
         v_clean = res['v_clean'].copy()
         v_all = res['v_all']
-        hk = hyp_keys[idx] if idx < len(hyp_keys) else chr(65 + idx)
+        # hk 与 plot_size_deconvolution 保持一致：由 label 派生，而非固定列表索引
+        hk = a['label'].replace('预期', 'hypothesis')   # e.g. 'hypothesisA', "hypothesisB'"
 
         # English axis labels (LaTeX)
         # 横坐标: A→E1adh, B→E2adh, C→Eadh
@@ -2415,11 +2451,16 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                 _style_clean_ax(ax_u, x_label, temp_label, x_vals, y_vals,
                                 user_xticks=xt_map.get((hk, 'g')),
                                 user_yticks=yt_map.get((hk, 'g')))
-                plt.tight_layout()
+                # tight_layout 根据轴标签/刻度自动分配边距，与图例条数无关
+                plt.tight_layout(pad=0.5)
                 fname_u = f'{htag}_clean_g_{panel_suffix}.png'
-                if _is_interactive(f'{hk}g-{panel_suffix}'):
+                # 同时支持短格式 (Ag-adh) 和长格式 (hypothesisAg-adh / "hypothesisB'g-size")
+                _hk_short = hk.replace('hypothesis', '')   # 'hypothesisA'→'A', "hypothesisB'"→"B'"
+                _ikey_long  = f'{hk}g-{panel_suffix}'      # "hypothesisAg-adh"
+                _ikey_short = f'{_hk_short}g-{panel_suffix}'  # "Ag-adh"
+                if _is_interactive(_ikey_long) or _is_interactive(_ikey_short):
                     fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
-                                  bbox_inches='tight', transparent=True)
+                                  transparent=True)
                     _drags = []
                     for ann, sn in zip(anns_u, names_u):
                         da = DraggableAnnotation(ann, sn, f'{hk}g_{panel_suffix}')
@@ -2431,10 +2472,10 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                         ann.get_bbox_patch().set_alpha(0)
                         ann.get_bbox_patch().set_edgecolor('none')
                     fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
-                                  bbox_inches='tight', transparent=True)
+                                  transparent=True)
                 else:
                     fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
-                                  bbox_inches='tight', transparent=True)
+                                  transparent=True)
                 plt.close()
                 print(f'  [OK] {htag} (g_{panel_suffix}) univariate R²: {output_dir}/{fname_u}')
                 return fname_u
@@ -2476,16 +2517,17 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
         n_cols = len(col_keys)
         row_labels = []
 
-        # 行顺序: Tm (C) → T1 (A) → T2 (B)
-        ROW_ORDER = {'预期C': 0, '预期A': 1, '预期B': 2}
-        results_sorted = sorted(results_partial,
-                                key=lambda r: ROW_ORDER.get(r.get('label', ''), 99))
+        # 行顺序: Tm (C) → T1 (A) → T3 (B')；预期B (T_onset_O 未归一化) 不入热图
+        ROW_ORDER = {'预期C': 0, '预期A': 1, "预期B'": 2}
+        results_sorted = sorted(
+            [r for r in results_partial if r.get('label', '') in ROW_ORDER],
+            key=lambda r: ROW_ORDER.get(r.get('label', ''), 99))
         n_rows = len(results_sorted)
         mat = np.full((n_rows, n_cols), np.nan)
         sig_mat = [[''] * n_cols for _ in range(n_rows)]
 
         for i, res in enumerate(results_sorted):
-            # 行标签: 温度名 + 界面类型标注
+            # 行标签: 温度名 + 界面类型标注（B' 与 B 统一显示为 T₂）
             if 'Type2' in res['adh']:
                 row_labels.append('$T_1$ (PtSn–SnO)')
             elif 'Type3' in res['adh']:
@@ -2722,6 +2764,34 @@ def main():
     
     df.to_csv(f"{output_dir}/adhesion_partition_data.csv", index=False)
     results_df.to_csv(f"{output_dir}/correlation_results.csv", index=False)
+
+    # --export-temperatures: 导出 T1/T2/T2' 温度汇总表
+    if args.export_temperatures:
+        DISPLAY_NAME = {'Pt6Sn5O2': 'g-948-Pt6Sn5O2',
+                        'Pt6Sn6O3': 'g-948-Pt6Sn6O3',
+                        'Sn7Pt6O4': 'g-1051-Sn7Pt6O4'}
+        t_rows = []
+        for case, pd_data in PARTITION_DATA.items():
+            a1 = ADHESION_TYPE1.get(case, {})
+            T2_B  = pd_data.get('T_onset_O', None)
+            T2_Bp = pd_data.get('T_onset_O_perO', None)
+            t_rows.append({
+                'case':                    DISPLAY_NAME.get(case, case),
+                'nPt':                     a1.get('nPt', ''),
+                'nSn':                     a1.get('nSn', ''),
+                'nO':                      a1.get('nO', ''),
+                'nMetal':                  a1.get('nMetal', ''),
+                'T1_lindemann(K)':         pd_data.get('T1_lindemann', None),
+                'T2_B(T_onset_O,K)':       T2_B,
+                "T2_Bprime(T3_onset_O,K)": T2_Bp,
+                'same?': ('Y' if T2_B == T2_Bp else f'diff({T2_Bp - T2_B:+d})')
+                         if (T2_B is not None and T2_Bp is not None) else 'N/A',
+            })
+        df_temps = pd.DataFrame(t_rows)
+        out_path = 'T1_T2_summary.csv'
+        df_temps.to_csv(out_path, index=False, encoding='utf-8-sig')
+        print(f"\n  [OK] 温度汇总表已保存: {out_path}")
+        print(df_temps.to_string(index=False))
     
     # 保存偏相关结果
     partial_rows = []
