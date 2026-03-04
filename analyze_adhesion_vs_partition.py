@@ -317,6 +317,7 @@ def build_dataframe():
             row["nPt"] = ADHESION_TYPE1[structure]["nPt"]
             row["nSn"] = ADHESION_TYPE1[structure]["nSn"]
             row["nO"] = ADHESION_TYPE1[structure]["nO"]
+            row["nO_total"] = ADHESION_TYPE1[structure]["nO"]
             row["nMetal"] = ADHESION_TYPE1[structure]["nMetal"]
         
         if structure in ADHESION_TYPE2:
@@ -343,8 +344,12 @@ def build_dataframe():
                 n_PtSn = row["nPt"] + row["nSn"] - sno["nSn_sno"]  # 不在SnO层的Sn + 所有Pt
                 row["nSn_sno"] = sno["nSn_sno"]
                 row["nO_sno"] = sno["nO_sno"]
+                row["nSn_SnO"] = sno["nSn_sno"]
+                row["nO_SnO"] = sno["nO_sno"]
                 row["n_SnO"] = n_SnO
                 row["n_PtSn"] = n_PtSn
+                row["nAtoms_SnO"] = n_SnO
+                row["nAtoms_PtSn"] = n_PtSn
                 
                 if "Type2_Eadh_last" in row and n_PtSn > 0:
                     row["Type2_per_atom"] = row["Type2_Eadh_last"] / n_PtSn
