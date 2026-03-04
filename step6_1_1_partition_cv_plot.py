@@ -289,7 +289,7 @@ def load_support_energy_data():
     return None
 
 
-def load_cluster_data(csv_path, exclude_dict=None, exclude_sort_by='delta'):
+def load_cluster_data(csv_path, exclude_dict=None, exclude_sort_by='delta', temp_range=None):
     """
     加载聚类结果数据并过滤
     
@@ -297,12 +297,22 @@ def load_cluster_data(csv_path, exclude_dict=None, exclude_sort_by='delta'):
         csv_path: CSV文件路径
         exclude_dict: 排除点字典 {temp: [indices]}
         exclude_sort_by: 排序依据 ('delta' 或 'energy')
+        temp_range: 温度范围元组 (min_temp, max_temp), 例如 (200, 1100)
     """
     try:
         df = pd.read_csv(csv_path)
         
+        # 应用温度范围过滤
+        if temp_range is not None:
+            min_temp, max_temp = temp_range
+            original_len = len(df)
+            df = df[(df['temp'] >= min_temp) & (df['temp'] <= max_temp)].copy()
+            print(f"\n  应用温度范围过滤: {min_temp}-{max_temp}K")
+            print(f"  过滤前: {original_len} 条, 过滤后: {len(df)} 条")
+        
         if exclude_dict:
-            print(f"\n  加载数据: {csv_path}")
+            if temp_range is None:
+                print(f"\n  加载数据: {csv_path}")
             print(f"  原始数据: {len(df)} 条")
             df = filter_data_by_exclusion(df, exclude_dict, sort_by=exclude_sort_by)
         
@@ -469,7 +479,7 @@ def calculate_transition_cv(df, temp_to_partition, phase_fits, temps_unique, E_c
     return result
 
 
-def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None, custom_partitions=None, peak_method='fit', remove_outliers=False, outlier_iqr=1.5, scatter_fit=False):
+def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None, custom_partitions=None, peak_method='fit', remove_outliers=False, outlier_iqr=1.5, scatter_fit=False, use_lines=False):
     """
     绘制分区热容拟合图（论文出图专用）
     
@@ -481,6 +491,7 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     
     参数：
         scatter_fit: bool, 是否对散点直接拟合（而不是先求平均值）
+        use_lines: bool, 是否使用直线连接温度平均点（而不是拟合回归线）
     
     tick_params: 刻度参数字典
         - y_ticks_custom: 自定义Y轴刻度列表
@@ -820,13 +831,25 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
                      ecolor='gray', elinewidth=2, capsize=4, capthick=2,
                      zorder=5, label='Data')
     
-    # 绘制拟合线（黑色）
+    # 绘制拟合线或连接线（黑色）
     phases_sorted = sorted(phase_fits.keys())
-    for phase in phases_sorted:
-        fit = phase_fits[phase]
-        T_phase_fit = np.linspace(fit['T_range'][0], fit['T_range'][1], 50)
-        E_phase_fit = fit['slope'] * T_phase_fit + fit['intercept']
-        ax1.plot(T_phase_fit, E_phase_fit, '-', color='black', linewidth=2.5, zorder=4)
+    if use_lines:
+        # 使用直线连接每个分区内的温度平均点
+        for phase in phases_sorted:
+            fit = phase_fits[phase]
+            # 获取该分区内的温度点
+            phase_mask = (temps_unique >= fit['T_range'][0]) & (temps_unique <= fit['T_range'][1])
+            T_phase_data = temps_unique[phase_mask]
+            E_phase_data = E_cluster_mean_rel[phase_mask]
+            # 绘制连接线
+            ax1.plot(T_phase_data, E_phase_data, '-', color='black', linewidth=2.5, zorder=4)
+    else:
+        # 使用回归拟合线
+        for phase in phases_sorted:
+            fit = phase_fits[phase]
+            T_phase_fit = np.linspace(fit['T_range'][0], fit['T_range'][1], 50)
+            E_phase_fit = fit['slope'] * T_phase_fit + fit['intercept']
+            ax1.plot(T_phase_fit, E_phase_fit, '-', color='black', linewidth=2.5, zorder=4)
     
     # 连接所有相邻分区之间的数据点（支持2分区/3分区/N分区）
     if len(phases_sorted) >= 2:
@@ -1075,14 +1098,27 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     
     plt.tight_layout()
     
-    # 保存图片
-    output_file = Path(output_dir) / f'{structure_name}_partition_cv.{output_format}'
+    # 保存图片（如果有自定义分区，在文件名中包含温度范围）
+    if custom_partitions and len(custom_partitions) > 0:
+        # 构建温度范围字符串
+        range_str = '_'.join([f"{int(T_min)}-{int(T_max)}K" for T_min, T_max in custom_partitions])
+        output_file = Path(output_dir) / f'{structure_name}_partition_{range_str}_cv.{output_format}'
+    else:
+        output_file = Path(output_dir) / f'{structure_name}_partition_cv.{output_format}'
+    
     plt.savefig(output_file, dpi=dpi, bbox_inches='tight', facecolor='white')
     plt.close()
     
     print(f"\n  图已保存: {output_file}")
     
     # ========== 6. 导出数据供 Origin 使用 ==========
+    # 确定文件名后缀（包含温度范围）
+    if custom_partitions and len(custom_partitions) > 0:
+        range_str = '_'.join([f"{int(T_min)}-{int(T_max)}K" for T_min, T_max in custom_partitions])
+        file_suffix = f'_{range_str}'
+    else:
+        file_suffix = ''
+    
     # 导出能量数据
     df_energy = pd.DataFrame({
         'Temperature_K': temps_unique,
@@ -1090,7 +1126,7 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         'Energy_std_eV': E_cluster_std,
         'Partition': [temp_to_partition.get(t, 'unknown') for t in temps_unique]
     })
-    energy_csv = Path(output_dir) / f'{structure_name}_energy_data.csv'
+    energy_csv = Path(output_dir) / f'{structure_name}{file_suffix}_energy_data.csv'
     df_energy.to_csv(energy_csv, index=False)
     print(f"  能量数据已导出: {energy_csv}")
     
@@ -1099,14 +1135,17 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         'Temperature_K': T_cv,
         'Cv_meV_K': Cv_curve
     })
-    cv_csv = Path(output_dir) / f'{structure_name}_cv_curve.csv'
+    cv_csv = Path(output_dir) / f'{structure_name}{file_suffix}_cv_curve.csv'
     df_cv.to_csv(cv_csv, index=False)
     print(f"  热容曲线已导出: {cv_csv}")
     
     # 导出拟合参数汇总
+    # 如果没有边界(只有一个分区),设置T_boundary为None
+    boundary_temp = boundaries[0]['T_boundary'] if boundaries else None
+    
     fit_summary = {
         'structure': structure_name,
-        'T_boundary_K': T_boundary,
+        'T_boundary_K': boundary_temp,
         'Cv_overall_meV_K': Cv_overall,
         'Cv_overall_err': Cv_overall_err,
         'R2_overall': R2_overall,
@@ -1276,6 +1315,14 @@ Lindemann阈值自动分区（新功能）:
     parser.add_argument('--scatter-fit', action='store_true',
                         help='散点模式：绘制所有原始数据点（不求平均），并对散点直接拟合\n'
                              '默认模式是对每个温度的多次运行求平均后绘制平均值（带误差棒）')
+    parser.add_argument('--use-lines', action='store_true',
+                        help='使用直线连接分区内的温度平均点（而不是绘制回归拟合线）\n'
+                             '默认模式是对每个分区进行线性回归拟合')
+    parser.add_argument('--temp-range', type=str, default=None,
+                        metavar='MIN-MAX',
+                        help='限制温度范围，格式: MIN-MAX\n'
+                             '例如: --temp-range 200-1100 只处理200-1100K的数据\n'
+                             '注意: 此参数会在数据读取后立即过滤，影响所有后续分析')
     
     return parser.parse_args()
 
@@ -1328,6 +1375,18 @@ def main():
             print(f"警告: 无效的 --partitions 格式 '{args.partitions}'，将使用聚类结果")
             print(f"  正确格式: T1_min-T1_max,T2_min-T2_max，例如 200-700,750-950")
             custom_partitions = None
+    
+    # 解析温度范围过滤
+    temp_range = None
+    if args.temp_range:
+        try:
+            min_temp, max_temp = map(float, args.temp_range.strip().split('-'))
+            temp_range = (min_temp, max_temp)
+            print(f"  温度范围限制: {min_temp}-{max_temp}K")
+        except ValueError:
+            print(f"警告: 无效的 --temp-range 格式 '{args.temp_range}'，将使用所有温度")
+            print(f"  正确格式: MIN-MAX，例如 200-1100")
+            temp_range = None
     
     # 解析排除点参数
     exclude_dict = parse_exclude_points(args.exclude)
@@ -1388,7 +1447,9 @@ def main():
             continue
         
         csv_path = available[found_name]
-        df = load_cluster_data(csv_path, exclude_dict=exclude_dict, exclude_sort_by=args.exclude_sort_by)
+        df = load_cluster_data(csv_path, exclude_dict=exclude_dict, 
+                               exclude_sort_by=args.exclude_sort_by,
+                               temp_range=temp_range)
         
         if df is None:
             failed += 1
@@ -1447,7 +1508,7 @@ def main():
         result = plot_partition_cv(df, found_name, output_dir, 
                                    args.format, args.dpi, tick_params, custom_partitions,
                                    args.peak_method, remove_outliers_param, args.outlier_iqr,
-                                   args.scatter_fit)
+                                   args.scatter_fit, args.use_lines)
         
         if result:
             results.append(result)
