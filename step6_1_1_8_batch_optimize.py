@@ -4,408 +4,508 @@
 对多个结构进行自动化的排除点优化分析
 
 分区策略:
-- T1(固相边界): 可选 Lindemann阈值(δ=0.1) 或 kmeans聚类
-- T2(液相边界): 基于kmeans聚类分析确定
-- 数据来源: results/step6_1_clustering/t1_t2_kmeans_comparison_19structures.csv
+- T1(固相边界): Lindemann 阈值 (T1_lindemann)
+- T2(液相边界): O 活化温度 (T2_B 或 T2_Bprime)
+- 数据来源: T1_T2_summary.csv  (自动读取，无需手动维护硬编码字典)
 """
 
 import os
 import sys
+import re
 import subprocess
 import pandas as pd
 from pathlib import Path
 
+
 # ============================================================================
-# 分区配置 - 支持两种边界类型: kmeans (默认) 和 lindemann
+# 从 T1_T2_summary.csv 自动加载分区配置
 # ============================================================================
 
-# 边界类型配置
-# T1_kmeans, T2_kmeans: 基于kmeans聚类的边界温度
-# T1_lindemann: 基于Lindemann指数δ=0.1的边界温度
-# 注意: T2只有kmeans版本，因为Lindemann主要用于确定熔点（T1）
-
-PARTITION_CONFIG_FULL = {
-    # ========== 2分区结构 (6个): 使用kmeans时有T2，使用Lindemann时无T2 ==========
-    "Sn1Pt2O1": {
-        "T1_kmeans": 750, "T2_kmeans": 1450, "T1_lindemann": 1800,
-        "type_kmeans": "3-partition", "type_lindemann": "2-partition"
-    },
-    "Pt2Sn2O1": {
-        "T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann": 1500,
-        "type_kmeans": "3-partition", "type_lindemann": "2-partition"
-    },
-    "Sn6Pt5O2": {
-        "T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann": 600,
-        "type_kmeans": "3-partition", "type_lindemann": "2-partition"
-    },
-    "Pt6Sn5O2": {
-        "T1_kmeans": 550, "T2_kmeans": 750, "T1_lindemann": 800,
-        "type_kmeans": "3-partition", "type_lindemann": "2-partition"
-    },
-    "Pt6Sn6O3": {
-        "T1_kmeans": 450, "T2_kmeans": 650, "T1_lindemann": 700,
-        "type_kmeans": "3-partition", "type_lindemann": "2-partition"
-    },
-    "Sn7Pt6O4": {
-        "T1_kmeans": 400, "T2_kmeans": 700, "T1_lindemann": 800,
-        "type_kmeans": "3-partition", "type_lindemann": "2-partition"
-    },
-    
-    # ========== 3分区结构 (13个): 两种边界类型都有T2 ==========
-    "Pt3Sn2O1": {
-        "T1_kmeans": 750, "T2_kmeans": 1200, "T1_lindemann": 1100, "T2_lindemann": 1200,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "Sn3O2Pt2": {
-        "T1_kmeans": 750, "T2_kmeans": 1400, "T1_lindemann": 1300, "T2_lindemann": 1500,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "O3Sn4Pt2": {
-        "T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann": 900, "T2_lindemann": 1200,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "Pt3Sn3O2": {
-        "T1_kmeans": 750, "T2_kmeans": 1300, "T1_lindemann": 1100, "T2_lindemann": 1200,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "Sn3Pt4O1": {
-        "T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann": 600, "T2_lindemann": 900,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "Pt5Sn3O1": {
-        "T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann": 600, "T2_lindemann": 800,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "Pt5Sn4O1": {
-        "T1_kmeans": 750, "T2_kmeans": 1250, "T1_lindemann": 800, "T2_lindemann": 900,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "O2Pt4Sn6": {
-        "T1_kmeans": 750, "T2_kmeans": 1300, "T1_lindemann": 600, "T2_lindemann": 900,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "Sn7Pt4O3": {
-        "T1_kmeans": 800, "T2_kmeans": 1300, "T1_lindemann": 700, "T2_lindemann": 900,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "O3Pt5Sn7": {
-        "T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann": 800, "T2_lindemann": 900,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "Pt7Sn5O1": {
-        "T1_kmeans": 650, "T2_kmeans": 1150, "T1_lindemann": 600, "T2_lindemann": 800,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "Pt7Sn6O1": {
-        "T1_kmeans": 600, "T2_kmeans": 1150, "T1_lindemann": 600, "T2_lindemann": 900,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-    "O2Pt7Sn7": {
-        "T1_kmeans": 750, "T2_kmeans": 1275, "T1_lindemann": 600, "T2_lindemann": 750,
-        "type_kmeans": "3-partition", "type_lindemann": "3-partition"
-    },
-}
-
-# 默认使用 kmeans 边界
-DEFAULT_BOUNDARY_TYPE = "kmeans"
-
-
-def get_partition_config(boundary_type="kmeans"):
+def load_partitions_from_csv(csv_file='T1_T2_summary.csv', T2_col='T2_B'):
     """
-    根据边界类型生成分区配置
-    
-    Args:
-        boundary_type: "kmeans" (默认) 或 "lindemann"
-    
-    Returns:
-        PARTITION_CONFIG 字典
-        
-    分区策略 (3分区结构):
-        - T1分区 (固相): 200K → T1边界
-        - T_mid分区 (过渡区): T1边界 → T2边界
-        - T2分区 (液相): T2边界 → 1800K
-    
-    分区策略 (2分区结构, 无T2):
-        - T1分区 (固相): 200K → T1边界
-        - T_mid分区: T1边界 → 1800K
+    从 T1_T2_summary.csv 读取每个结构的分区边界，自动生成三分区配置。
+
+    分区规则:
+      partition1 (固态):   200K → round(T1, -2)
+      partition2 (熔化中): round(T1, -2) → T2
+      partition3 (液态):   T2 → 1800K
+
+    注意:
+      - T1_lindemann 会被对齐到最近的 100K 整数（向下取整）用作边界
+      - T2 直接使用 CSV 中的整数值
+      - 若 T1_boundary >= T2，则退化为 2 分区（无中间相）
+
+    Parameters
+    ----------
+    csv_file : str
+        T1_T2_summary.csv 的路径
+    T2_col : str
+        使用哪列作为 T2：'T2_B' 或 'T2_Bprime'
+
+    Returns
+    -------
+    dict: {structure_name: {'partitions': [(T_lo, T_hi), ...], 'T1': float, 'T2': float}}
     """
-    config = {}
-    
-    for structure, full_config in PARTITION_CONFIG_FULL.items():
-        T1_key = f"T1_{boundary_type}"
-        T2_key = f"T2_{boundary_type}" if boundary_type == "lindemann" else "T2_kmeans"
-        type_key = f"type_{boundary_type}"
-        
-        T1_val = full_config.get(T1_key)
-        T2_val = full_config.get(T2_key)
-        partition_type = full_config.get(type_key, "3-partition")
-        
-        # T1范围 (固相): 200K → T1边界
-        # 使用T1边界本身作为范围终点（包含边界点）
-        T1_range = (200, T1_val) if T1_val else None
-        
-        # T_mid范围 (过渡区): T1边界 → T2边界
-        if T1_val and T2_val:
-            T_mid_range = (T1_val, T2_val)
-        elif T1_val:
-            # 无T2时，过渡区延伸到1800K
-            T_mid_range = (T1_val, 1800)
+    if not Path(csv_file).exists():
+        raise FileNotFoundError(f"找不到分区配置文件: {csv_file}")
+
+    df = pd.read_csv(csv_file)
+    # 列名映射（兼容带括号的列名）
+    col_map = {}
+    for col in df.columns:
+        if 'T1_lindemann' in col:
+            col_map['T1'] = col
+        if 'T2_B(' in col and 'prime' not in col:
+            col_map['T2_B'] = col
+        if 'T2_Bprime' in col or "T3_onset" in col:
+            col_map['T2_Bprime'] = col
+
+    T1_col_name = col_map.get('T1', 'T1_lindemann(K)')
+    T2_col_name = col_map.get(T2_col, col_map.get('T2_B'))
+
+    result = {}
+    for _, row in df.iterrows():
+        structure = str(row['case']).strip()
+        T1_raw = float(row[T1_col_name])
+        T2_val = float(row[T2_col_name])
+
+        # T1 向下对齐到 100K 整数（例如 1492 → 1400）
+        T1_boundary = int(T1_raw // 100) * 100
+
+        # 避免 T1_boundary >= T2 的情况（退化为 2 分区）
+        if T1_boundary >= T2_val:
+            partitions = [
+                (200, T2_val),
+                (T2_val, 1800),
+            ]
         else:
-            T_mid_range = None
-        
-        # T2范围 (液相): T2边界 → 1800K
-        if T2_val:
-            T2_range = (T2_val, 1800)
-        else:
-            T2_range = None
-        
-        config[structure] = {
-            "T1": T1_range,           # 固相: 200K → T1
-            "T_mid": T_mid_range,     # 过渡区: T1 → T2
-            "T2": T2_range,           # 液相: T2 → 1800K
-            "type": partition_type,
-            "T1_boundary": T1_val,
-            "T2_boundary": T2_val
+            partitions = [
+                (200, T1_boundary),
+                (T1_boundary, T2_val),
+                (T2_val, 1800),
+            ]
+
+        result[structure] = {
+            'partitions': partitions,
+            'T1_raw': T1_raw,
+            'T1_boundary': T1_boundary,
+            'T2': T2_val,
+            'n_partitions': len(partitions),
+            # 数据文件可能使用不带 "g-xxx-" 前缀的短名，自动提取备用
+            'data_name': re.sub(r'^g-\d+-', '', structure),
         }
-    
-    return config
+
+    return result
 
 
-# 生成默认配置（兼容旧代码）
-PARTITION_CONFIG = get_partition_config(DEFAULT_BOUNDARY_TYPE)
-
-# 结构列表
-STRUCTURES_2_PARTITION = [s for s, c in PARTITION_CONFIG.items() if c["type"] == "2-partition"]
-STRUCTURES_3_PARTITION = [s for s, c in PARTITION_CONFIG.items() if c["type"] == "3-partition"]
-ALL_STRUCTURES = list(PARTITION_CONFIG.keys())
+# 默认 CSV 文件和 T2 列
+DEFAULT_CSV = 'T1_T2_summary.csv'
+DEFAULT_T2_COL = 'T2_Bprime'
 
 
-def check_data_file(structure):
-    """检查数据文件是否存在"""
-    data_file = f"results/step6_1_clustering/{structure}_lindemann-threshold_n2_clustered_data.csv"
-    return os.path.exists(data_file)
+def get_partition_str(partitions):
+    """将 [(200,1400),(1400,1700),(1700,1800)] 转成 '200-1400,1400-1700,1700-1800'"""
+    return ','.join(f"{int(lo)}-{int(hi)}" for lo, hi in partitions)
 
 
-def run_optimize_for_structure(structure, mode="all", threshold=60, platform="windows"):
-    """对单个结构运行优化分析"""
+def extract_plot_cmd_from_report(structure, data_name=None):
+    """
+    从 *_EXCLUDE_RECOMMENDATIONS.md 中提取 --partitions 和 --exclude 参数。
+    先用 structure 找，找不到再用 data_name（短名）。
+
+    返回 (report_name, partitions_str, exclude_args_list) 或 None。
+    """
+    for name in dict.fromkeys([structure, data_name]):
+        if not name:
+            continue
+        report_file = f"{name}_EXCLUDE_RECOMMENDATIONS.md"
+        if os.path.exists(report_file):
+            break
+    else:
+        return None
+
+    try:
+        content = Path(report_file).read_text(encoding='utf-8')
+    except Exception:
+        return None
+
+    # 在 powershell 代码块里找完整命令（跨行，用反引号续行）
+    # 找 ```powershell ... ``` 块
+    ps_block = re.search(r'```powershell\s*(.*?)```', content, re.DOTALL)
+    if not ps_block:
+        return None
+
+    cmd_text = ps_block.group(1)
+    # 去掉续行符，拼成一行
+    cmd_text = cmd_text.replace('`\n', ' ').replace('\\\n', ' ')
+    cmd_text = ' '.join(cmd_text.split())  # 压缩多余空白
+
+    # 提取 --partitions
+    m_part = re.search(r'--partitions\s+(\S+)', cmd_text)
+    partitions_str = m_part.group(1) if m_part else None
+
+    # 提取所有 --exclude 参数（可能有多个 "xxxK:0,1,2" 片段）
+    # 找 --exclude 后面的所有带引号的参数
+    m_excl = re.search(r'--exclude\s+((?:"[^"]*"\s*)+)', cmd_text)
+    if m_excl:
+        exclude_args = re.findall(r'"([^"]*)"', m_excl.group(1))
+    else:
+        exclude_args = []
+
+    return name, partitions_str, exclude_args
+
+
+def run_plot_for_structure(structure, figsize="10x8", extra_args=None, data_name=None):
+    """
+    读取报告里的筛选参数，调用 step6_1_1_partition_cv_plot.py 绘图。
+
+    Parameters
+    ----------
+    structure  : str  CSV 中的全名（用于日志显示）
+    data_name  : str  数据文件/报告的短名（去掉 g-xxx- 前缀）
+    figsize    : str  传给 --figsize，默认 '10x8'
+    extra_args : list  附加参数
+    """
+    parsed = extract_plot_cmd_from_report(structure, data_name)
+    if parsed is None:
+        print(f"  [SKIP] {structure}: 未找到报告或解析失败，跳过绘图")
+        return False
+
+    report_name, partitions_str, exclude_args = parsed
+    # 绘图脚本用报告里的实际名字（可能是短名）
+    plot_structure = report_name
+
+    cmd = ["python", "step6_1_1_partition_cv_plot.py",
+           "--structure", plot_structure,       # 用实际文件名（短名）
+           "--figsize", figsize,
+           "--peak-method", "partition"]
+
+    if partitions_str:
+        cmd += ["--partitions", partitions_str]
+
+    for ex in exclude_args:
+        cmd += ["--exclude", ex]
+
+    if exclude_args:
+        cmd += ["--exclude-sort-by", "energy"]
+
+    if extra_args:
+        cmd += extra_args
+
+    print(f"  绘图命令: {' '.join(cmd)}")
+
+    try:
+        import locale
+        encoding = locale.getpreferredencoding() if sys.platform == 'win32' else 'utf-8'
+        env = os.environ.copy()
+        env.setdefault('PYTHONIOENCODING', 'utf-8')
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding=encoding, errors='replace', env=env)
+        if result.returncode == 0:
+            # 推算图片路径（与 step6_1_1_partition_cv_plot.py 保持一致）
+            if partitions_str:
+                range_str = '_'.join(f"{seg}K" for seg in partitions_str.split(','))
+                img_path = f"results/step6_1_1_partition_cv/{plot_structure}_partition_{range_str}_cv.png"
+            else:
+                img_path = f"results/step6_1_1_partition_cv/{plot_structure}_partition_cv.png"
+            img_exists = os.path.exists(img_path)
+            status = "[OK]" if img_exists else "[?]"
+            print(f"  {status} 绘图成功: {img_path}")
+            return img_path if img_exists else True
+        else:
+            print(f"  [FAIL] 绘图失败: {structure}")
+            if result.stderr:
+                print(f"  错误: {result.stderr[:400].strip()}")
+            return False
+    except Exception as e:
+        print(f"  [ERROR] 绘图异常: {e}")
+        return False
+
+
+def check_data_file(structure, data_name=None):
+    """
+    检查数据文件是否存在。
+    先用 structure 名查找，找不到再用 data_name（去掉 g-xxx- 前缀的短名）。
+    返回实际找到的文件名（str），找不到返回 None。
+    """
+    base = f"results/step6_1_clustering/{{}}_lindemann-threshold_n2_clustered_data.csv"
+    for name in dict.fromkeys([structure, data_name]):  # 去重，保持顺序
+        if name and os.path.exists(base.format(name)):
+            return name
+    return None
+
+
+def run_optimize_for_structure(structure, partitions, mode="suggest", threshold=60,
+                               platform="windows", data_name=None):
+    """
+    对单个结构运行优化分析，自动附加 --partitions 参数。
+
+    Parameters
+    ----------
+    structure  : str  CSV 中的结构名（用于报告/日志文件名）
+    partitions : list[(float,float)]
+    data_name  : str  数据文件实际使用的短名（去掉 g-xxx- 前缀），None 时与 structure 相同
+    """
     print("\n" + "="*80)
     print(f"处理: {structure}")
     print("="*80)
-    
-    # 检查数据文件
-    if not check_data_file(structure):
-        print(f"  [SKIP] 数据文件不存在,跳过: {structure}")
+
+    # 检查数据文件（先尝试 structure，再尝试 data_name）
+    found_name = check_data_file(structure, data_name)
+    if not found_name:
+        tried = list(dict.fromkeys([structure, data_name]))
+        print(f"  [SKIP] 数据文件不存在，跳过: {tried}")
         return False
-    
-    # 构建命令
+
+    if found_name != structure:
+        print(f"  [注意] 数据文件使用短名: {found_name}  (CSV名: {structure})")
+
+    partitions_str = get_partition_str(partitions)
+    print(f"  分区: {partitions_str}")
+
+    # 构建命令：--structure 用实际文件名，报告/日志仍用 structure 全名
     cmd = [
         "python", "step6_1_1_8_auto_optimize_exclude.py",
-        "--structure", structure,
+        "--structure", found_name,
         "--mode", mode,
         "--threshold", str(threshold),
-        "--platform", platform
+        "--platform", platform,
+        "--partitions", partitions_str,
     ]
-    
+
     print(f"  命令: {' '.join(cmd)}")
-    
-    # 运行命令并记录日志(始终继续，不抛出)
+
+    # 运行命令并记录日志
     try:
-        # Windows中文环境下使用系统默认编码
-        import sys
         import locale
         encoding = locale.getpreferredencoding() if sys.platform == 'win32' else 'utf-8'
-
-        # Ensure child Python uses UTF-8 for stdout/stderr to avoid encoding errors on Windows
         env = os.environ.copy()
         env.setdefault('PYTHONIOENCODING', 'utf-8')
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding=encoding, errors='replace', env=env)
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding=encoding, errors='replace', env=env)
 
-        # 写入日志文件
         logs_dir = Path("logs")
         logs_dir.mkdir(parents=True, exist_ok=True)
-        out_file = logs_dir / f"{structure}.out.txt"
-        err_file = logs_dir / f"{structure}.err.txt"
         try:
-            with open(out_file, 'w', encoding='utf-8') as fo:
-                fo.write(result.stdout or "")
-            with open(err_file, 'w', encoding='utf-8') as fe:
-                fe.write(result.stderr or "")
-        except Exception:
-            # 最坏情况：仍然不要中断批量流程
-            print("  警告: 无法写入日志文件")
+            (logs_dir / f"{structure}.out.txt").write_text(
+                result.stdout or "", encoding='utf-8', errors='replace')
+            (logs_dir / f"{structure}.err.txt").write_text(
+                result.stderr or "", encoding='utf-8', errors='replace')
+        except Exception as we:
+            print(f"  警告: 无法写入日志文件 ({we})")
 
         if result.returncode == 0:
             print(f"  [OK] 成功")
+            # 打印子进程全部输出（对 GBK 终端做安全编码）
+            if result.stdout:
+                safe_out = result.stdout.encode(
+                    sys.stdout.encoding or 'utf-8', errors='replace'
+                ).decode(sys.stdout.encoding or 'utf-8', errors='replace')
+                print(safe_out)
             return True
         else:
-            print(f"  [FAIL] 失败 (查看 logs/{structure}.err.txt 获取详细信息)")
-            # 打印一小段 stderr 便于实时查看
+            print(f"  [FAIL] 失败 (查看 logs/{structure}.err.txt)")
             if result.stderr:
                 print(f"  错误(摘要): {result.stderr[:400].strip()}")
             return False
     except Exception as e:
-        print(f"  [ERROR] 异常: {str(e)}")
-        # 记录异常到日志
+        print(f"  [ERROR] 异常: {e}")
         try:
-            logs_dir = Path("logs")
-            logs_dir.mkdir(parents=True, exist_ok=True)
-            with open(logs_dir / f"{structure}.err.txt", 'w', encoding='utf-8') as fe:
-                fe.write(str(e))
+            Path("logs").mkdir(parents=True, exist_ok=True)
+            (Path("logs") / f"{structure}.err.txt").write_text(str(e), encoding='utf-8')
         except Exception:
             pass
         return False
 
 
-def generate_partition_commands(structure, exclude_dict, config):
-    """生成分区绘图命令"""
-    partition_info = PARTITION_CONFIG.get(structure)
-    if not partition_info:
-        print(f"  警告: {structure} 没有分区配置")
-        return []
-    
-    commands = []
-    
-    # T1分区命令
-    if partition_info["T1"]:
-        T1_min, T1_max = partition_info["T1"]
-        exclude_args = " ".join([f'"{k}K:{",".join(map(str, v))}"' for k, v in exclude_dict.items()
-                                 if T1_min <= k <= T1_max])
-        
-        cmd = f"""python step6_1_1_partition_cv_plot.py `
-    --structure {structure} `
-    --partitions {T1_min}-{T1_max}"""
-        
-        if exclude_args:
-            cmd += f""" `
-    --exclude {exclude_args} `
-    --exclude-sort-by energy"""
-        
-        cmd += """ `
-    --y-ticks 0,2,4 --cv-ticks 3,4,5,6 --figsize 10x8 --peak-method partition"""
-        
-        commands.append(("T1", cmd))
-    
-    # T2分区命令
-    if partition_info["T2"]:
-        T2_min, T2_max = partition_info["T2"]
-        exclude_args = " ".join([f'"{k}K:{",".join(map(str, v))}"' for k, v in exclude_dict.items()
-                                 if T2_min <= k <= T2_max])
-        
-        cmd = f"""python step6_1_1_partition_cv_plot.py `
-    --structure {structure} `
-    --partitions {T2_min}-{T2_max}"""
-        
-        if exclude_args:
-            cmd += f""" `
-    --exclude {exclude_args} `
-    --exclude-sort-by energy"""
-        
-        cmd += """ `
-    --y-ticks 0,2,4 --cv-ticks 3,4,5,6 --figsize 10x8 --peak-method partition"""
-        
-        commands.append(("T2", cmd))
-    
-    return commands
+def batch_process(partition_map, structures=None, mode="suggest", threshold=60,
+                  platform="windows", auto_plot=True, figsize="10x8"):
+    """
+    批量处理多个结构。
 
+    Parameters
+    ----------
+    partition_map : dict  由 load_partitions_from_csv() 返回的分区配置
+    structures    : list  要处理的结构名列表；None 表示处理 partition_map 中所有结构
+    auto_plot     : bool  筛选完成后自动调用绘图脚本（默认 True）
+    figsize       : str   绘图尺寸，传给 --figsize（默认 '10x8'）
+    """
+    if structures is None:
+        structures = list(partition_map.keys())
 
-def batch_process(structures, mode="all", threshold=60, platform="windows"):
-    """批量处理多个结构"""
+    # 过滤掉没有数据文件的结构
+    available = [s for s in structures if s in partition_map]
+    missing   = [s for s in structures if s not in partition_map]
+    if missing:
+        print(f"  [警告] 以下结构在 CSV 中找不到分区配置，跳过: {missing}")
+
     print("\n" + "="*80)
-    print(f"批量优化排除点分析")
+    print("批量优化排除点分析 (分区由 T1_T2_summary.csv 自动读取)")
     print("="*80)
-    print(f"结构数量: {len(structures)}")
-    print(f"模式: {mode}")
-    print(f"阈值: {threshold} meV")
-    print(f"平台: {platform}")
+    print(f"结构数量: {len(available)}")
+    print(f"模式: {mode}  阈值: {threshold} meV  平台: {platform}")
     print("="*80)
-    
-    results = []
 
-    for i, structure in enumerate(structures, 1):
-        print(f"\n[{i}/{len(structures)}] {structure}")
-        success = run_optimize_for_structure(structure, mode, threshold, platform)
-        # 记录结果并关联日志/报告路径
-        report_file = f"{structure}_EXCLUDE_RECOMMENDATIONS.md"
-        out_log = f"logs/{structure}.out.txt"
-        err_log = f"logs/{structure}.err.txt"
+    results = []
+    for i, structure in enumerate(available, 1):
+        print(f"\n[{i}/{len(available)}] {structure}")
+        cfg = partition_map[structure]
+        success = run_optimize_for_structure(
+            structure, cfg['partitions'], mode, threshold, platform,
+            data_name=cfg.get('data_name'),
+        )
+        # 报告可能用短名生成（g-xxx-前缀被去掉），两个都尝试
+        data_name = cfg.get('data_name', structure)
+        report_file = (f"{data_name}_EXCLUDE_RECOMMENDATIONS.md"
+                       if os.path.exists(f"{data_name}_EXCLUDE_RECOMMENDATIONS.md")
+                       else f"{structure}_EXCLUDE_RECOMMENDATIONS.md")
         results.append({
             "structure": structure,
+            "data_name": data_name,
+            "partitions": get_partition_str(cfg['partitions']),
             "success": success,
             "report": report_file if os.path.exists(report_file) else "",
-            "out_log": out_log if os.path.exists(out_log) else "",
-            "err_log": err_log if os.path.exists(err_log) else "",
+            "out_log": f"logs/{structure}.out.txt",
+            "err_log": f"logs/{structure}.err.txt",
         })
-    
+
     # 汇总
     print("\n" + "="*80)
     print("批量处理汇总")
     print("="*80)
     success_count = sum(1 for r in results if r['success'])
     fail_count = len(results) - success_count
-    
-    print(f"总数: {len(results)}")
-    print(f"成功: {success_count}")
-    print(f"失败: {fail_count}")
-    
+    print(f"总数: {len(results)}  成功: {success_count}  失败: {fail_count}")
     if fail_count > 0:
         print("\n失败的结构:")
         for r in results:
             if not r['success']:
-                print(f"  - {r['structure']} (查看 {r['err_log'] or 'logs/<structure>.err.txt'})")
+                print(f"  - {r['structure']}")
 
-    # 保存批量运行日志汇总CSV
+    # 保存汇总 CSV
     try:
         import csv
-        summary_file = 'batch_run_results.csv'
-        with open(summary_file, 'w', newline='', encoding='utf-8-sig') as cf:
-            writer = csv.DictWriter(cf, fieldnames=['structure', 'success', 'report', 'out_log', 'err_log'])
+        with open('batch_run_results.csv', 'w', newline='', encoding='utf-8-sig') as cf:
+            writer = csv.DictWriter(cf, fieldnames=['structure', 'data_name', 'partitions', 'success', 'report', 'out_log', 'err_log'],
+                                    extrasaction='ignore')
             writer.writeheader()
-            for r in results:
-                writer.writerow(r)
-        print(f"\n[OK] 批量运行结果已保存: {summary_file}")
+            writer.writerows(results)
+        print("\n[OK] 批量运行结果已保存: batch_run_results.csv")
     except Exception as e:
-        print(f"  无法写入批量运行汇总: {e}")
-    
+        print(f"  无法写入汇总: {e}")
+
     print("\n[OK] 批量处理完成!")
-    print(f"报告目录: 当前工作目录下生成 *_EXCLUDE_RECOMMENDATIONS.md")
+
+    # ── 自动绘图 ──────────────────────────────────────────────────────
+    if auto_plot:
+        print("\n" + "="*80)
+        print("批量绘图 (使用筛选报告中的参数)")
+        print("="*80)
+        plot_ok, plot_fail = 0, 0
+        plot_images = []
+        for r in results:
+            structure = r['structure']
+            if not r['success']:
+                print(f"  [SKIP] {structure}: 筛选失败，跳过绘图")
+                continue
+            print(f"\n  → {structure}")
+            img = run_plot_for_structure(structure, figsize=figsize,
+                                         data_name=r.get('data_name'))
+            if img:
+                plot_ok += 1
+                if isinstance(img, str):
+                    plot_images.append((structure, img))
+            else:
+                plot_fail += 1
+
+        print(f"\n{'='*80}")
+        print(f"绘图汇总: 共 {plot_ok + plot_fail} 个结构  [成功 {plot_ok}]  [失败 {plot_fail}]")
+        if plot_images:
+            print(f"\n生成的图片 ({len(plot_images)} 个):")
+            for name, path in plot_images:
+                print(f"  {name:<25}  {path}")
+        print("="*80)
+    else:
+        print("\n[提示] 绘图已跳过（使用 --no-plot 禁用，去掉可自动绘图）")
 
 
-def generate_summary_table():
+def generate_summary_table(partition_map):
     """生成所有结构的优化效果汇总表"""
     print("\n" + "="*80)
     print("生成优化效果汇总表")
     print("="*80)
-    
+
     summary_data = []
-    
-    for structure in list(PARTITION_CONFIG.keys()):
-        report_file = f"{structure}_EXCLUDE_RECOMMENDATIONS.md"
-        
-        if not os.path.exists(report_file):
-            print(f"  跳过 {structure}: 报告不存在")
+    for structure, cfg in partition_map.items():
+        # 先用全名找，找不到再用短名（data_name，去掉 g-xxx- 前缀）
+        data_name = cfg.get('data_name', structure)
+        for name in dict.fromkeys([structure, data_name]):
+            report_file = f"{name}_EXCLUDE_RECOMMENDATIONS.md"
+            if os.path.exists(report_file):
+                break
+        else:
+            print(f"  跳过 {structure}: 报告不存在 (尝试过: {structure}, {data_name})")
             continue
         
-        # 读取报告提取关键指标
+        # 读取实际数据文件，获取温度范围
+        actual_t_range = "N/A"
+        runs_per_t_str = "N/A"
+        data_sources   = "N/A"
+        try:
+            found_name = check_data_file(structure, data_name)
+            if found_name:
+                data_csv = (f"results/step6_1_clustering/"
+                            f"{found_name}_lindemann-threshold_n2_clustered_data.csv")
+                df_data = pd.read_csv(data_csv)
+                # 温度列可能叫 temp / T / temperature
+                t_col = next(
+                    (c for c in df_data.columns
+                     if c.strip().lower() in ('t', 'temperature', 'temp')),
+                    None
+                )
+                if t_col:
+                    t_min = int(df_data[t_col].min())
+                    t_max = int(df_data[t_col].max())
+                    n_pts = len(df_data)
+                    actual_t_range = f"{t_min}-{t_max}K ({n_pts}pts)"
+
+                    # 每个温度点模拟次数（min-max 或单值）
+                    runs_per_t = df_data.groupby(t_col).size()
+                    r_min, r_max = int(runs_per_t.min()), int(runs_per_t.max())
+                    runs_per_t_str = str(r_min) if r_min == r_max else f"{r_min}-{r_max}"
+
+                    # 上游数据来源（data_source 列）
+                    if 'data_source' in df_data.columns:
+                        src_list = sorted(df_data['data_source'].dropna().unique())
+                        data_sources = ','.join(str(s) for s in src_list)
+        except Exception:
+            pass  # 找不到数据文件时保持 N/A
+
+        # 读取报告，提取关键指标
         try:
             with open(report_file, 'r', encoding='utf-8') as f:
                 content = f.read()
-                
-                # 简单提取(实际应该用正则表达式)
-                partition_type = PARTITION_CONFIG[structure]["type"]
-                T1_range = PARTITION_CONFIG[structure]["T1"]
-                T2_range = PARTITION_CONFIG[structure]["T2"]
-                
-                summary_data.append({
-                    "结构": structure,
-                    "分区类型": partition_type,
-                    "T1范围": f"{T1_range[0]}-{T1_range[1]}K" if T1_range else "-",
-                    "T2范围": f"{T2_range[0]}-{T2_range[1]}K" if T2_range else "-",
-                    "报告": "[OK]"
-                })
+
+            # 从报告内容中用正则提取 Cv 数值（可选，找不到就记 N/A）
+            cv_vals = re.findall(r'Cv_net\s*[=≈:]\s*([\d.]+)', content)
+            cv_summary = ', '.join(cv_vals) if cv_vals else "N/A"
+
+            summary_data.append({
+                "结构": structure,
+                "分区数": cfg['n_partitions'],
+                "分区范围": get_partition_str(cfg['partitions']),
+                "T1_lindemann": cfg['T1_raw'],
+                "T2_B": cfg['T2'],
+                "数据温度范围": actual_t_range,
+                "runs/T点": runs_per_t_str,
+                "数据来源": data_sources,
+                "Cv_net(meV/K)": cv_summary,
+                "报告": "[OK]",
+            })
         except Exception as e:
             print(f"  错误 {structure}: {e}")
-    
-    # 生成CSV
+
+    # 生成 CSV
     if summary_data:
         df = pd.DataFrame(summary_data)
         output_file = "batch_optimization_summary.csv"
@@ -418,95 +518,80 @@ def generate_summary_table():
 
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(description="批量优化排除点分析工具")
-    parser.add_argument('--structures', nargs='+', 
-                        help='指定要处理的结构列表(空格分隔)')
-    parser.add_argument('--mode', default='all', 
+
+    parser = argparse.ArgumentParser(
+        description="批量优化排除点分析工具（分区自动从 T1_T2_summary.csv 读取）"
+    )
+    parser.add_argument('--structures', nargs='+',
+                        help='指定要处理的结构列表（空格分隔）；默认处理 CSV 中全部结构')
+    parser.add_argument('--mode', default='suggest',
                         choices=['suggest', 'test', 'compare', 'all'],
-                        help='分析模式 (默认: all)')
+                        help='分析模式 (默认: suggest)')
     parser.add_argument('--threshold', type=int, default=60,
                         help='残差阈值(meV) (默认: 60)')
-    parser.add_argument('--platform', default='windows', 
+    parser.add_argument('--platform', default='windows',
                         choices=['windows', 'linux', 'mac'],
                         help='目标平台 (默认: windows)')
-    parser.add_argument('--partition-type', 
-                        choices=['2', '3', 'all'],
-                        help='按分区类型筛选 (2=2分区, 3=3分区, all=全部)')
-    parser.add_argument('--boundary-type', default='kmeans',
-                        choices=['kmeans', 'lindemann'],
-                        help='边界类型: kmeans(默认,基于聚类) 或 lindemann(基于δ=0.1)')
+    parser.add_argument('--partition-type',
+                        choices=['2', '3', 'all'], default='all',
+                        help='按分区数筛选 (2=2分区, 3=3分区, all=全部)')
+    parser.add_argument('--csv-file', default=DEFAULT_CSV,
+                        help=f'T1/T2 汇总 CSV 文件路径 (默认: {DEFAULT_CSV})')
+    parser.add_argument('--t2-col', default=DEFAULT_T2_COL,
+                        choices=['T2_B', 'T2_Bprime'],
+                        help=f'使用哪一列作为 T2 (默认: {DEFAULT_T2_COL})')
     parser.add_argument('--summary-only', action='store_true',
-                        help='仅生成汇总表,不运行分析')
+                        help='仅生成汇总表，不运行分析')
     parser.add_argument('--show-config', action='store_true',
-                        help='显示当前分区配置信息')
-    
+                        help='显示从 CSV 读取的分区配置信息后退出')
+    parser.add_argument('--no-plot', action='store_true',
+                        help='筛选完成后不自动绘图（默认筛选后自动绘图）')
+    parser.add_argument('--figsize', default='10x8',
+                        help='绘图尺寸，传给 --figsize（默认: 10x8）')
+
     args = parser.parse_args()
-    
-    # 根据边界类型生成配置
-    partition_config = get_partition_config(args.boundary_type)
-    structures_2_partition = [s for s, c in partition_config.items() if c["type"] == "2-partition"]
-    structures_3_partition = [s for s, c in partition_config.items() if c["type"] == "3-partition"]
-    all_structures = list(partition_config.keys())
-    
-    print(f"\n[配置] 边界类型: {args.boundary_type.upper()}")
-    print(f"  - 2分区结构: {len(structures_2_partition)}个")
-    print(f"  - 3分区结构: {len(structures_3_partition)}个")
-    
-    # 显示配置信息
+
+    # ── 从 CSV 加载分区配置 ──────────────────────────────────────────
+    partition_map = load_partitions_from_csv(args.csv_file, args.t2_col)
+    structures_2 = [s for s, c in partition_map.items() if c['n_partitions'] == 2]
+    structures_3 = [s for s, c in partition_map.items() if c['n_partitions'] == 3]
+
+    print(f"\n[配置] CSV: {args.csv_file}  T2列: {args.t2_col}")
+    print(f"  2分区结构: {len(structures_2)}个  3分区结构: {len(structures_3)}个")
+
+    # ── --show-config：打印分区配置后退出 ────────────────────────────
     if args.show_config:
-        print("\n" + "="*110)
-        print(f"分区配置详情 (当前边界类型: {args.boundary_type})")
-        print("="*110)
-        print(f"{'结构':<15} {'类型':<12} {'T1(固相)':<15} {'T_mid(过渡区)':<18} {'T2(液相)':<15}")
-        print("-"*110)
-        for s, c in partition_config.items():
-            t1_range = f"{c['T1'][0]}-{c['T1'][1]}K" if c['T1'] else "N/A"
-            t_mid_range = f"{c['T_mid'][0]}-{c['T_mid'][1]}K" if c['T_mid'] else "N/A"
-            t2_range = f"{c['T2'][0]}-{c['T2'][1]}K" if c['T2'] else "N/A"
-            print(f"{s:<15} {c['type']:<12} {t1_range:<15} {t_mid_range:<18} {t2_range:<15}")
-        
-        # 显示两种边界类型的对比
-        print("\n" + "="*110)
-        print("两种边界类型对比 (都基于Lindemann指数，但计算方法不同)")
-        print("="*110)
-        print(f"{'结构':<15} | {'T1_kmeans':>9} | {'T1_lindemann':>12} | {'T2_kmeans':>9} | {'T2_lindemann':>12} | {'T1差异':>6}")
-        print("-"*110)
-        for structure, config in PARTITION_CONFIG_FULL.items():
-            t1_k = config.get('T1_kmeans', 0)
-            t1_l = config.get('T1_lindemann', 0)
-            t2_k = config.get('T2_kmeans', 0)
-            t2_l = config.get('T2_lindemann', 0)
-            diff = abs(t1_k - t1_l)
-            t2_l_str = f"{t2_l}K" if t2_l else "N/A"
-            print(f"{structure:<15} | {t1_k:>8}K | {t1_l:>11}K | {t2_k:>8}K | {t2_l_str:>12} | {diff:>5}K")
-        
-        print("\n" + "="*110)
-        print("说明:")
-        print("  - kmeans: 聚类算法自动识别相变温度 (可能是非100K整数倍，如700K、650K)")
-        print("  - lindemann: Lindemann指数首次超过δ=0.1阈值的温度")
-        print("  - T1差异: 两种方法计算的T1边界差值")
-        print("  - T2_lindemann为N/A: 该结构在lindemann模式下为2分区(无过渡区)")
-        print("="*110)
+        print("\n" + "="*90)
+        print(f"分区配置 (来源: {args.csv_file}, T2列: {args.t2_col})")
+        print("="*90)
+        print(f"{'结构':<18} {'分区数':>5}  {'T1_raw':>8}  {'T1_boundary':>11}  {'T2':>6}  {'分区范围'}")
+        print("-"*90)
+        for s, c in partition_map.items():
+            print(f"{s:<18} {c['n_partitions']:>5}  {c['T1_raw']:>8.0f}  "
+                  f"{c['T1_boundary']:>11}  {c['T2']:>6}  "
+                  f"{get_partition_str(c['partitions'])}")
+        print("="*90)
         sys.exit(0)
-    
-    # 确定要处理的结构列表
+
+    # ── --summary-only：只生成汇总表 ─────────────────────────────────
     if args.summary_only:
-        generate_summary_table()
+        generate_summary_table(partition_map)
         sys.exit(0)
-    
+
+    # ── 确定目标结构列表 ──────────────────────────────────────────────
     if args.structures:
         structures = args.structures
     elif args.partition_type == '2':
-        structures = structures_2_partition
+        structures = structures_2
     elif args.partition_type == '3':
-        structures = structures_3_partition
+        structures = structures_3
     else:
-        structures = structures_2_partition + structures_3_partition
-    
-    # 运行批量处理
-    batch_process(structures, args.mode, args.threshold, args.platform)
-    
-    # 生成汇总表
-    if args.mode == 'all':
-        generate_summary_table()
+        structures = list(partition_map.keys())
+
+    # ── 运行批量处理 ──────────────────────────────────────────────────
+    batch_process(partition_map, structures, args.mode, args.threshold, args.platform,
+                  auto_plot=not args.no_plot, figsize=args.figsize)
+
+    # ── 生成汇总表 ────────────────────────────────────────────────────
+    if args.mode in ('all', 'suggest'):
+        generate_summary_table(partition_map)
