@@ -227,6 +227,31 @@ ADHESION_TYPE3 = {
     "O2Pt7Sn7": {"Eadh_first": -57.88468, "Eadh_last": -57.527967, "nPt": 7, "nSn": 7, "nO": 2, "nMetal": 14},
 }
 
+# 类型4: 整个 PtSnO 簇 与 Al2O3 的吸附能 (E4)
+# 物理含义: 金属-氧化物整体界面粘附强度 (含O效应), 归一化至 nO → 反映每个O原子对界面结合的贡献
+# 数据来源: 用户 2026-03 新增 (与 Type2 同批次 AIMD, 不同分割面)
+ADHESION_TYPE4 = {
+    "Sn1Pt2O1": {"Eadh_last": -3.268905, "nPt": 2, "nSn": 1, "nO": 1, "nMetal": 3},
+    "Pt2Sn2O1": {"Eadh_last": -2.684449, "nPt": 2, "nSn": 2, "nO": 1, "nMetal": 4},
+    "Pt3Sn2O1": {"Eadh_last": -3.320033, "nPt": 3, "nSn": 2, "nO": 1, "nMetal": 5},
+    "Sn3O2Pt2": {"Eadh_last": -3.174117, "nPt": 2, "nSn": 3, "nO": 2, "nMetal": 5},
+    "O3Sn4Pt2": {"Eadh_last": -4.039789, "nPt": 2, "nSn": 4, "nO": 3, "nMetal": 6},
+    "Pt3Sn3O2": {"Eadh_last": -3.682498, "nPt": 3, "nSn": 3, "nO": 2, "nMetal": 6},
+    "Sn3Pt4O1": {"Eadh_last": -2.400166, "nPt": 4, "nSn": 3, "nO": 1, "nMetal": 7},
+    "Pt5Sn3O1": {"Eadh_last": -1.968795, "nPt": 5, "nSn": 3, "nO": 1, "nMetal": 8},
+    "Pt5Sn4O1": {"Eadh_last": -2.966004, "nPt": 5, "nSn": 4, "nO": 1, "nMetal": 9},
+    "O2Pt4Sn6": {"Eadh_last": -2.643805, "nPt": 4, "nSn": 6, "nO": 2, "nMetal": 10},
+    "Sn6Pt5O2": {"Eadh_last": -2.964427, "nPt": 5, "nSn": 6, "nO": 2, "nMetal": 11},
+    "Sn7Pt4O3": {"Eadh_last": -2.233587, "nPt": 4, "nSn": 7, "nO": 3, "nMetal": 11},
+    "Pt6Sn5O2": {"Eadh_last": -3.426205, "nPt": 6, "nSn": 5, "nO": 2, "nMetal": 11},
+    "O3Pt5Sn7": {"Eadh_last": -3.692219, "nPt": 5, "nSn": 7, "nO": 3, "nMetal": 12},
+    "Pt7Sn5O1": {"Eadh_last": -2.740339, "nPt": 7, "nSn": 5, "nO": 1, "nMetal": 12},
+    "Pt6Sn6O3": {"Eadh_last": -3.214217, "nPt": 6, "nSn": 6, "nO": 3, "nMetal": 12},
+    "Pt7Sn6O1": {"Eadh_last": -2.442727, "nPt": 7, "nSn": 6, "nO": 1, "nMetal": 13},
+    "Sn7Pt6O4": {"Eadh_last": -6.249845, "nPt": 6, "nSn": 7, "nO": 4, "nMetal": 13},
+    "O2Pt7Sn7": {"Eadh_last": -3.965053, "nPt": 7, "nSn": 7, "nO": 2, "nMetal": 14},
+}
+
 # SnO 层的原子组成 (来自 MS 结构文件中实际的 SnO 团簇)
 # nSn_sno: SnO层中的Sn原子数; nO_sno: SnO层中的O原子数
 # n_SnO = nSn_sno + nO_sno (Type3 每原子粘附能的分母)
@@ -355,7 +380,16 @@ def build_dataframe():
                     row["Type2_per_atom"] = row["Type2_Eadh_last"] / n_PtSn
                 if "Type3_Eadh_last" in row and n_SnO > 0:
                     row["Type3_per_atom"] = row["Type3_Eadh_last"] / n_SnO
-        
+
+        # Type4: 整个 PtSnO 簇 / Al2O3 吸附能, 归一化至 nO
+        # Type4_per_nO = Eadh_last / nO  (每O原子的整体界面粘附能)
+        if structure in ADHESION_TYPE4:
+            t4 = ADHESION_TYPE4[structure]
+            row["Type4_Eadh_last"] = t4["Eadh_last"]
+            nO_t4 = t4["nO"]
+            if nO_t4 > 0:
+                row["Type4_per_nO"] = t4["Eadh_last"] / nO_t4
+
         # T3_onset_O: 每个 O 原子归一化的迁移起始温度
         # 来源: PARTITION_DATA["T_onset_O_perO"] — 由 process_melting_summary.py 以阈值 2.5/nO /ps 重新计算
         # 物理含义: 体系总迁移频率等效于每个O原子独立达到2.5/ps时的最低温度
@@ -871,6 +905,15 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
             'temp_name': 'T3_onset_O (÷nO)',
             'physical': "每O的Type1粘附能→T3: 界面粘附强度(归一化至O数)决定O迁移难易",
             'color': 'crimson', 'color_clean': 'darkred',
+        },
+        {
+            'label': '预期D',
+            'adh_col': 'Type4_per_nO', 'temp_col': 'T3_onset_O',
+            'size_col': 'nO',
+            'adh_name': 'Type4/nO (÷nO)',
+            'temp_name': 'T3_onset_O (÷nO)',
+            'physical': "整体PtSnO/Al2O3粘附能(每O归一化)→T3: 含O的整体界面结合强度决定O迁移",
+            'color': 'chocolate', 'color_clean': 'saddlebrown',
         },
         {
             'label': '预期C',
@@ -1788,12 +1831,14 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                 dx, dy = auto_offsets[i] if i < len(auto_offsets) else (x_range * 0.04, y_range * 0.04)
 
             va = 'bottom' if dy > 0 else 'top'
+            # 交互模式下关闭裁剪以便拖动查看超界标签; 非交互模式裁掉以保持图幅固定
+            _clip = (args.interactive is None)
             ann = ax.annotate(lbl,
                               xy=(x, y),
                               xytext=(x + dx, y + dy),
                               fontsize=20, fontfamily='Arial',
                               ha='left', va=va, color='black',
-                              clip_on=False,
+                              clip_on=_clip,
                               bbox=dict(boxstyle='round,pad=0.5',
                                         facecolor='lightyellow' if args.interactive is not None else 'white',
                                         edgecolor='gray' if args.interactive is not None else 'none',
@@ -2527,7 +2572,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                                   bbox_inches='tight', transparent=True)
                 else:
                     fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
-                                  bbox_inches='tight', transparent=True)
+                                  transparent=True)
                 plt.close()
                 print(f'  [OK] {htag} (g_{panel_suffix}) univariate R²: {output_dir}/{fname_u}')
                 return fname_u
