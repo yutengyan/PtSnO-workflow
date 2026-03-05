@@ -602,6 +602,12 @@ def plot_per_atom_adhesion(df, output_dir="results/adhesion_analysis"):
     df['Type1_Eadh_per_atom'] = df['Type1_per_atom']
     df['Type2_Eadh_per_atom'] = df['Type2_per_atom']
     df['Type3_Eadh_per_atom'] = df['Type3_per_atom']
+    # Type1_total: 总吸附能（非每原子），即 Eadh_last 原始值
+    if 'Type1_Eadh_last' in df.columns:
+        df['Type1_total'] = df['Type1_Eadh_last']
+    # Type1_per_nO: Type1总吸附能 / nO（每O原子的Type1粘附能贡献）
+    if 'Type1_Eadh_last' in df.columns and 'nO' in df.columns:
+        df['Type1_per_nO'] = df['Type1_Eadh_last'] / df['nO']
     
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     
@@ -847,6 +853,24 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
             'temp_name': 'T3_onset_O (÷nO)',
             'physical': "SnO粘附→O迁移(T3=T_onset/nO归一化，消除nO尺寸效应)",
             'color': 'mediumpurple', 'color_clean': 'rebeccapurple',
+        },
+        {
+            'label': "预期B''",
+            'adh_col': 'Type1_total', 'temp_col': 'T3_onset_O',
+            'size_col': 'nMetal',
+            'adh_name': 'Type1_total (总吸附能, 非每原子)',
+            'temp_name': 'T3_onset_O (÷nO)',
+            'physical': "总粘附能(非归一化)→O迁移温度T3: 粘附能总量主导氧活化",
+            'color': 'darkorange', 'color_clean': 'saddlebrown',
+        },
+        {
+            'label': '预期B3',
+            'adh_col': 'Type1_per_nO', 'temp_col': 'T3_onset_O',
+            'size_col': 'nO',
+            'adh_name': 'Type1/nO (÷nO)',
+            'temp_name': 'T3_onset_O (÷nO)',
+            'physical': "每O的Type1粘附能→T3: 界面粘附强度(归一化至O数)决定O迁移难易",
+            'color': 'crimson', 'color_clean': 'darkred',
         },
         {
             'label': '预期C',
@@ -1536,9 +1560,9 @@ def _style_clean_ax(ax, xlabel, ylabel, x_data, y_data,
     ax.set_yticks(yt)
     ax.set_yticklabels([_fmt_tick(v) for v in yt], fontfamily='Arial')
 
-    # Axis limits with small padding
-    x_pad = (x_data.max() - x_data.min()) * 0.08
-    y_pad = (y_data.max() - y_data.min()) * 0.08
+    # Axis limits with padding
+    x_pad = (x_data.max() - x_data.min()) * 0.12
+    y_pad = (y_data.max() - y_data.min()) * 0.12
     ax.set_xlim(x_data.min() - x_pad, x_data.max() + x_pad)
     ax.set_ylim(y_data.min() - y_pad, y_data.max() + y_pad)
 
@@ -1791,15 +1815,38 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
         for p in args.clean_panel:
             if p == 'D':
                 draw_panel_D = True
-            elif len(p) == 2 and p[0] in 'ABC' and p[1] in 'abcdefg':
-                panel_filter.add(p)
             else:
-                print(f"  [WARN] 无效面板标识 '{p}' (应为 Aa-Ag/Ba-Bg/Ca-Cg/D)")
+                # 支持两种格式:
+                #   短格式(原有): Aa / Bc / Cg  (单字母假说 + 单字母面板)
+                #   扩展格式: B3g-adh / B'g-adh / B''g-adh (多字符假说 + g-adh/g-size)
+                # 提取规则: 末尾 g-adh / g-size 或 单字母 a-g
+                import re as _re
+                _m = _re.match(r'^([A-C][^a-g]*)([a-g](?:-adh|-size)?)$', p)
+                if _m:
+                    panel_filter.add(p)
+                elif len(p) == 2 and p[0] in 'ABC' and p[1] in 'abcdefg':
+                    panel_filter.add(p)
+                else:
+                    print(f"  [WARN] 无效面板标识 '{p}' (应为 Aa-Ag/Ba-Bg/Ca-Cg/B3g-adh/D)")
 
     def _should_draw(hk, panel_letter):
+        """判断是否需要绘制指定面板。
+        hk: 'hypothesisA' / 'hypothesisB3' 等
+        panel_letter: 'a'-'g'
+        panel_filter 中的条目格式: 'Ag' / 'B3g-adh' 等（去掉 'hypothesis' 前缀）
+        """
         if panel_filter is None:
             return True
-        return f'{hk}{panel_letter}' in panel_filter
+        # hk_short: 去掉 'hypothesis' 前缀，如 'A' / "B'" / 'B3'
+        hk_short = hk.replace('hypothesis', '')
+        # 精确匹配: 短格式 'Ag', 或 g 面板扩展格式 'B3g-adh' / 'B3g-size' / 'B3g'
+        if f'{hk_short}{panel_letter}' in panel_filter:
+            return True
+        # g 面板还接受 'B3g-adh' / 'B3g-size'
+        if panel_letter == 'g':
+            if f'{hk_short}g-adh' in panel_filter or f'{hk_short}g-size' in panel_filter:
+                return True
+        return False
 
     # ---- DraggableAnnotation for --interactive ----
     class DraggableAnnotation:
@@ -1944,7 +1991,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                             user_xticks=xt_map.get((hk, 'a')),
                             user_yticks=yt_map.get((hk, 'a')))
 
-            plt.tight_layout()
+            plt.tight_layout(pad=0.5)
             fname_a = f'{htag}_clean_a.png'
 
             if _is_interactive(f'{hk}a'):
@@ -2003,7 +2050,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                             user_xticks=xt_map.get((hk, 'b')),
                             user_yticks=yt_map.get((hk, 'b')))
 
-            plt.tight_layout()
+            plt.tight_layout(pad=0.5)
             fname_b = f'{htag}_clean_b.png'
 
             if _is_interactive(f'{hk}b'):
@@ -2064,7 +2111,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                             user_xticks=xt_map.get((hk, 'c')),
                             user_yticks=yt_map.get((hk, 'c')))
 
-            plt.tight_layout()
+            plt.tight_layout(pad=0.5)
             fname_c = f'{htag}_clean_c.png'
 
             if _is_interactive(f'{hk}c'):
@@ -2199,7 +2246,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                             user_xticks=xt_map.get((hk, 'd')),
                             user_yticks=yt_map.get((hk, 'd')))
 
-            plt.tight_layout()
+            plt.tight_layout(pad=0.5)
             fname_d = f'{htag}_clean_d.png'
 
             if _is_interactive(f'{hk}d'):
@@ -2310,7 +2357,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                             user_xticks=xt_map.get((hk, 'e')),
                             user_yticks=yt_map.get((hk, 'e')))
 
-            plt.tight_layout()
+            plt.tight_layout(pad=0.5)
             fname_e = f'{htag}_clean_e.png'
 
             if _is_interactive(f'{hk}e'):
@@ -2373,7 +2420,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                             user_xticks=xt_map.get((hk, 'f')),
                             user_yticks=yt_map.get((hk, 'f')))
 
-            plt.tight_layout()
+            plt.tight_layout(pad=0.5)
             fname_f = f'{htag}_clean_f_size_effect.png'
 
             if _is_interactive(f'{hk}f'):
@@ -2465,7 +2512,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                 _ikey_short = f'{_hk_short}g-{panel_suffix}'  # "Ag-adh"
                 if _is_interactive(_ikey_long) or _is_interactive(_ikey_short):
                     fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
-                                  transparent=True)
+                                  bbox_inches='tight', transparent=True)
                     _drags = []
                     for ann, sn in zip(anns_u, names_u):
                         da = DraggableAnnotation(ann, sn, f'{hk}g_{panel_suffix}')
@@ -2477,10 +2524,10 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                         ann.get_bbox_patch().set_alpha(0)
                         ann.get_bbox_patch().set_edgecolor('none')
                     fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
-                                  transparent=True)
+                                  bbox_inches='tight', transparent=True)
                 else:
                     fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
-                                  transparent=True)
+                                  bbox_inches='tight', transparent=True)
                 plt.close()
                 print(f'  [OK] {htag} (g_{panel_suffix}) univariate R²: {output_dir}/{fname_u}')
                 return fname_u
@@ -2520,208 +2567,218 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                       'p_partial_adh', 'p_partial_size']
 
         n_cols = len(col_keys)
-        row_labels = []
-
-        # 行顺序: Tm (C) → T1 (A) → T3 (B')；预期B (T_onset_O 未归一化) 不入热图
-        ROW_ORDER = {'预期C': 0, '预期A': 1, "预期B'": 2}
-        results_sorted = sorted(
-            [r for r in results_partial if r.get('label', '') in ROW_ORDER],
-            key=lambda r: ROW_ORDER.get(r.get('label', ''), 99))
-        n_rows = len(results_sorted)
-        mat = np.full((n_rows, n_cols), np.nan)
-        sig_mat = [[''] * n_cols for _ in range(n_rows)]
-
-        for i, res in enumerate(results_sorted):
-            # 行标签: 温度名 + 界面类型标注（B' 与 B 统一显示为 T₂）
-            if 'Type2' in res['adh']:
-                row_labels.append('$T_1$ (PtSn–SnO)')
-            elif 'Type3' in res['adh']:
-                row_labels.append('$T_2$ (SnO–AlO)')
-            else:
-                row_labels.append('$T_m$ (PtSn–AlO)')
-
-            for j, ck in enumerate(col_keys):
-                val = res.get(ck, np.nan)
-                # r 和 β 列取绝对值，统一表达相关强度；R² 列本身≥0 不需要处理
-                _is_r2_col = ck.startswith('R2_')
-                if not _is_r2_col and not np.isnan(val):
-                    val = abs(val)
-                mat[i, j] = val
-                pk = p_keys[j]
-                if pk and pk in res:
-                    sig_mat[i][j] = _sig_label(res[pk])
-
-        # ---- 选择颜色映射 ----
-        # 全部列统一用 sequential (YlOrRd)，范围 [0, VMAX]
-        # 默认 VMAX=1.0 截断 |β|>1；可用 --heatmap-vmax 1.5 扩展
-        cmap_seq = plt.cm.YlOrRd
-        VMAX = args.heatmap_vmax
-
-        # ---- 自适应图宽: 5列→10, 7列→13 ----
-        fig_width  = 10 + 3 * int(args.heatmap_r2)  # 10 or 13
-        val_fs     = 18 if not args.heatmap_r2 else 15  # 数值字号
-        col_lbl_fs = 16 if not args.heatmap_r2 else 13  # 列标题字号
-
-        # ---- 绘图 ----
-        fig, ax = plt.subplots(figsize=(fig_width, 4.5))
-        fig.patch.set_alpha(0)
-
-        for i in range(n_rows):
-            for j in range(n_cols):
-                val = mat[i, j]
-                if np.isnan(val):
-                    color = 'white'
-                else:
-                    color = cmap_seq(min(val / VMAX, 1.0))
-
-                rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
-                                     facecolor=color, edgecolor='white',
-                                     linewidth=2)
-                ax.add_patch(rect)
-
-                # 文字颜色: 深色背景用白字 (阈值按 VMAX 比例换算)
-                text_color = 'white' if val > VMAX * 0.55 else 'black'
-
-                # 数值文本 (全部正值，不显示符号)
-                txt = f'{val:.2f}'
-
-                ax.text(j, i, txt, ha='center', va='center',
-                        fontsize=val_fs, fontfamily='Arial', fontweight='bold',
-                        color=text_color)
-
-        # --heatmap-r2: 在第2列与第3列之间画分隔竖线 (单变量 | 多元)
-        if args.heatmap_r2:
-            ax.axvline(x=1.5, color='#555555', linewidth=2.0, linestyle='--', alpha=0.7)
-
-        # 坐标轴设置
-        ax.set_xlim(-0.5, n_cols - 0.5)
-        ax.set_ylim(-0.5, n_rows - 0.5)
-        ax.set_xticks(range(n_cols))
-        ax.set_xticklabels(col_labels, fontsize=col_lbl_fs, fontfamily='Arial',
-                           ha='center')
-        ax.xaxis.set_ticks_position('top')
-        ax.xaxis.set_label_position('top')
-        ax.set_yticks(range(n_rows))
-        ax.set_yticklabels(row_labels, fontsize=20, fontfamily='Arial')
-        ax.invert_yaxis()
-
-        # 边框
-        for spine in ax.spines.values():
-            spine.set_linewidth(2)
-            spine.set_color('black')
-        ax.tick_params(axis='both', length=0)
-
-        # ---- 单色标 (统一 sequential) ----
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
-        divider = make_axes_locatable(ax)
-
-        cax_right = divider.append_axes("right", size="3%", pad=0.3)
-        norm_seq = mcolors.Normalize(vmin=0, vmax=VMAX)
-        sm_seq = plt.cm.ScalarMappable(cmap=cmap_seq, norm=norm_seq)
-        sm_seq.set_array([])
-        cbar_seq = plt.colorbar(sm_seq, cax=cax_right, orientation='vertical')
-        cbar_seq.set_label('strength', fontsize=16, fontfamily='Arial')
-        cbar_seq.ax.tick_params(labelsize=14)
-
-        plt.tight_layout()
-        fname_D = 'partial_correlation_summary_heatmap.png'
-        fig.savefig(f'{output_dir}/{fname_D}', dpi=300,
-                    bbox_inches='tight', transparent=True)
-        n_drawn += 1
-        plt.close()
-        print(f'  [OK] (D) summary heatmap: {output_dir}/{fname_D}')
 
         # ================================================================
-        # (D2) 单变量 r + R² heatmap
-        #      列: R²_adh | r_adh(univ) | R²_size | r_size(univ) | r_partial(adh) | r_partial(size)
-        #      R² 列: sequential (YlOrRd, 0→1)
-        #      r  列: 分歧色标 (RdBu_r, -1→+1), 数值带显著性星号
-        #      虚线分隔: univ组 | partial组
-        #      行: 同 (D)
+        # 两套行配置: 图1=全部5行, 图2=3行(C/A/B3)
         # ================================================================
-        col_keys_r  = ['R2_adh_only', 'r_adh_univ',
-                       'R2_size_only', 'r_size_univ']
-        col_labels_r = [r'$R^2_{adh}$',  r'$|r_{adh}|$',
-                        r'$R^2_{size}$', r'$|r_{size}|$']
-        p_keys_r    = [None, None, None, None]   # 不显示星号
-        # 标记哪些列是 R²（sequential 色），哪些是 r（分歧色）
-        is_r2_col_r = [True, False, True, False]
+        ROW_ORDER_FULL = {'预期C': 0, '预期A': 1, "预期B'": 2, "预期B''": 3, '预期B3': 4}
+        ROW_ORDER_3    = {'预期C': 0, '预期A': 1, '预期B3': 2}
 
-        n_cols_r = len(col_keys_r)
-        mat_r    = np.full((n_rows, n_cols_r), np.nan)
-        sig_mat_r = [[''] * n_cols_r for _ in range(n_rows)]
+        ROW_LABEL_MAP = {
+            '预期C':   r'$T_m$ (PtSn–AlO)',
+            '预期A':   r'$T_1$ (PtSn–SnO)',
+            "预期B'":  r"$T_2$ (SnO–AlO, $E^3_{adh}$)",
+            "预期B''": r"$T_2$ (SnO–AlO, $E^1_{adh}$ total)",
+            '预期B3':  r'$T_2$ (SnO–AlO)',
+        }
 
-        for i, res in enumerate(results_sorted):
-            for j, ck in enumerate(col_keys_r):
-                val = res.get(ck, np.nan)
-                mat_r[i, j] = val          # R² 本身≥0；r 保留正负号
-                pk = p_keys_r[j]
-                if pk and pk in res:
-                    sig_mat_r[i][j] = _sig_label(res[pk])
+        heatmap_configs = [
+            # (文件名后缀, ROW_ORDER字典)
+            ('partial_correlation_summary_heatmap.png',   ROW_ORDER_FULL),
+            ('partial_correlation_summary_heatmap2.png',  ROW_ORDER_3),
+        ]
 
-        # 两套色标
-        cmap_seq_r = plt.cm.YlOrRd          # R² 列: 0→1 sequential
-        VLIM_R = 1.0
+        for fname_D, row_order in heatmap_configs:
+            row_labels = []
+            results_sorted = sorted(
+                [r for r in results_partial if r.get('label', '') in row_order],
+                key=lambda r: row_order.get(r.get('label', ''), 99))
+            n_rows = len(results_sorted)
+            mat = np.full((n_rows, n_cols), np.nan)
+            sig_mat = [[''] * n_cols for _ in range(n_rows)]
 
-        # 图宽: 4列 → 9，R² 和 |r| 统一用 YlOrRd sequential
-        fig_r, ax_r2 = plt.subplots(figsize=(9, 4.5))
-        fig_r.patch.set_alpha(0)
+            for i, res in enumerate(results_sorted):
+                lbl = res.get('label', '')
+                row_labels.append(ROW_LABEL_MAP.get(lbl, lbl))
+                for j, ck in enumerate(col_keys):
+                    val = res.get(ck, np.nan)
+                    _is_r2_col = ck.startswith('R2_')
+                    if not _is_r2_col and not np.isnan(val):
+                        val = abs(val)
+                    mat[i, j] = val
+                    pk = p_keys[j]
+                    if pk and pk in res:
+                        sig_mat[i][j] = _sig_label(res[pk])
 
-        for i in range(n_rows):
-            for j in range(n_cols_r):
-                val = mat_r[i, j]
-                # r 列取绝对值参与着色
-                disp_val = val if is_r2_col_r[j] else abs(val)
-                if np.isnan(disp_val):
-                    color = 'white'
-                else:
-                    color = cmap_seq_r(min(disp_val / VLIM_R, 1.0))
+            # ---- 选择颜色映射 ----
+            # 全部列统一用 sequential (YlOrRd)，范围 [0, VMAX]
+            # 默认 VMAX=1.0 截断 |β|>1；可用 --heatmap-vmax 1.5 扩展
+            cmap_seq = plt.cm.YlOrRd
+            VMAX = args.heatmap_vmax
 
-                rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
-                                     facecolor=color, edgecolor='white', linewidth=2)
-                ax_r2.add_patch(rect)
+            # ---- 自适应图宽/高: 5列→10, 7列→13; 每行1.4英寸 ----
+            fig_width  = 10 + 3 * int(args.heatmap_r2)  # 10 or 13
+            fig_height = max(2.5, n_rows * 1.4)          # 3行→4.2, 5行→7.0
+            val_fs     = 18 if not args.heatmap_r2 else 15  # 数值字号
+            col_lbl_fs = 16 if not args.heatmap_r2 else 13  # 列标题字号
 
-                text_color = 'white' if disp_val > 0.55 else 'black'
-                # R² 和 |r| 均显示绝对值，无符号，2位小数
-                txt = f'{disp_val:.2f}'
-                ax_r2.text(j, i, txt, ha='center', va='center',
-                           fontsize=17, fontfamily='Arial', fontweight='bold',
-                           color=text_color)
+            # ---- 绘图 ----
+            fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+            fig.patch.set_alpha(0)
 
-        # 虚线分隔: adh组(R²+|r|) | size组(R²+|r|)
-        ax_r2.axvline(x=1.5, color='#444444', linewidth=2.0, linestyle='--', alpha=0.8)
+            for i in range(n_rows):
+                for j in range(n_cols):
+                    val = mat[i, j]
+                    if np.isnan(val):
+                        color = 'white'
+                    else:
+                        color = cmap_seq(min(val / VMAX, 1.0))
 
-        ax_r2.set_xlim(-0.5, n_cols_r - 0.5)
-        ax_r2.set_ylim(-0.5, n_rows - 0.5)
-        ax_r2.set_xticks(range(n_cols_r))
-        ax_r2.set_xticklabels(col_labels_r, fontsize=15, fontfamily='Arial', ha='center')
-        ax_r2.xaxis.set_ticks_position('top')
-        ax_r2.xaxis.set_label_position('top')
-        ax_r2.set_yticks(range(n_rows))
-        ax_r2.set_yticklabels(row_labels, fontsize=20, fontfamily='Arial')
-        ax_r2.invert_yaxis()
-        for spine in ax_r2.spines.values():
-            spine.set_linewidth(2); spine.set_color('black')
-        ax_r2.tick_params(axis='both', length=0)
+                    rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
+                                         facecolor=color, edgecolor='white',
+                                         linewidth=2)
+                    ax.add_patch(rect)
 
-        # 单色标 (统一 sequential)
-        from mpl_toolkits.axes_grid1 import make_axes_locatable as _mad
-        div_r = _mad(ax_r2)
-        cax_r = div_r.append_axes("right", size="3%", pad=0.3)
-        norm_r = mcolors.Normalize(vmin=0, vmax=VLIM_R)
-        sm_r   = plt.cm.ScalarMappable(cmap=cmap_seq_r, norm=norm_r)
-        sm_r.set_array([])
-        cbar_r = plt.colorbar(sm_r, cax=cax_r, orientation='vertical')
-        cbar_r.set_label('strength', fontsize=14, fontfamily='Arial')
-        cbar_r.ax.tick_params(labelsize=12)
+                    # 文字颜色: 深色背景用白字 (阈值按 VMAX 比例换算)
+                    text_color = 'white' if val > VMAX * 0.55 else 'black'
 
-        plt.tight_layout()
-        fname_D2 = 'partial_correlation_summary_heatmap_r.png'
-        fig_r.savefig(f'{output_dir}/{fname_D2}', dpi=300,
-                      bbox_inches='tight', transparent=True)
-        n_drawn += 1
-        plt.close()
-        print(f'  [OK] (D2) univariate-r heatmap: {output_dir}/{fname_D2}')
+                    # 数值文本 (全部正值，不显示符号)
+                    txt = f'{val:.2f}'
+
+                    ax.text(j, i, txt, ha='center', va='center',
+                            fontsize=val_fs, fontfamily='Arial', fontweight='bold',
+                            color=text_color)
+
+            # --heatmap-r2: 在第2列与第3列之间画分隔竖线 (单变量 | 多元)
+            if args.heatmap_r2:
+                ax.axvline(x=1.5, color='#555555', linewidth=2.0, linestyle='--', alpha=0.7)
+
+            # 坐标轴设置
+            ax.set_xlim(-0.5, n_cols - 0.5)
+            ax.set_ylim(-0.5, n_rows - 0.5)
+            ax.set_xticks(range(n_cols))
+            ax.set_xticklabels(col_labels, fontsize=col_lbl_fs, fontfamily='Arial',
+                               ha='center')
+            ax.xaxis.set_ticks_position('top')
+            ax.xaxis.set_label_position('top')
+            ax.set_yticks(range(n_rows))
+            ax.set_yticklabels(row_labels, fontsize=20, fontfamily='Arial')
+            ax.invert_yaxis()
+
+            # 边框
+            for spine in ax.spines.values():
+                spine.set_linewidth(2)
+                spine.set_color('black')
+            ax.tick_params(axis='both', length=0)
+
+            # ---- 单色标 (统一 sequential) ----
+            from mpl_toolkits.axes_grid1 import make_axes_locatable
+            divider = make_axes_locatable(ax)
+
+            cax_right = divider.append_axes("right", size="3%", pad=0.3)
+            norm_seq = mcolors.Normalize(vmin=0, vmax=VMAX)
+            sm_seq = plt.cm.ScalarMappable(cmap=cmap_seq, norm=norm_seq)
+            sm_seq.set_array([])
+            cbar_seq = plt.colorbar(sm_seq, cax=cax_right, orientation='vertical')
+            cbar_seq.set_label('strength', fontsize=16, fontfamily='Arial')
+            cbar_seq.ax.tick_params(labelsize=14)
+
+            plt.tight_layout(pad=0.5)
+            fig.savefig(f'{output_dir}/{fname_D}', dpi=300,
+                        bbox_inches='tight', transparent=True)
+            n_drawn += 1
+            plt.close()
+            print(f'  [OK] (D) summary heatmap: {output_dir}/{fname_D}')
+
+            # ================================================================
+            # (D2) 单变量 r + R² heatmap
+            #      列: R²_adh | r_adh(univ) | R²_size | r_size(univ)
+            #      R² 列: sequential (YlOrRd, 0→1)
+            #      行: 同 (D), 由 row_order 决定
+            # ================================================================
+            col_keys_r  = ['R2_adh_only', 'r_adh_univ',
+                           'R2_size_only', 'r_size_univ']
+            col_labels_r = [r'$R^2_{adh}$',  r'$|r_{adh}|$',
+                            r'$R^2_{size}$', r'$|r_{size}|$']
+            p_keys_r    = [None, None, None, None]   # 不显示星号
+            # 标记哪些列是 R²（sequential 色），哪些是 r（分歧色）
+            is_r2_col_r = [True, False, True, False]
+
+            n_cols_r = len(col_keys_r)
+            mat_r    = np.full((n_rows, n_cols_r), np.nan)
+            sig_mat_r = [[''] * n_cols_r for _ in range(n_rows)]
+
+            for i, res in enumerate(results_sorted):
+                for j, ck in enumerate(col_keys_r):
+                    val = res.get(ck, np.nan)
+                    mat_r[i, j] = val          # R² 本身≥0；r 保留正负号
+                    pk = p_keys_r[j]
+                    if pk and pk in res:
+                        sig_mat_r[i][j] = _sig_label(res[pk])
+
+            # 两套色标
+            cmap_seq_r = plt.cm.YlOrRd          # R² 列: 0→1 sequential
+            VLIM_R = 1.0
+
+            # 图宽: 4列 → 9，R² 和 |r| 统一用 YlOrRd sequential
+            fig_r, ax_r2 = plt.subplots(figsize=(9, fig_height))
+            fig_r.patch.set_alpha(0)
+
+            for i in range(n_rows):
+                for j in range(n_cols_r):
+                    val = mat_r[i, j]
+                    # r 列取绝对值参与着色
+                    disp_val = val if is_r2_col_r[j] else abs(val)
+                    if np.isnan(disp_val):
+                        color = 'white'
+                    else:
+                        color = cmap_seq_r(min(disp_val / VLIM_R, 1.0))
+
+                    rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
+                                         facecolor=color, edgecolor='white', linewidth=2)
+                    ax_r2.add_patch(rect)
+
+                    text_color = 'white' if disp_val > 0.55 else 'black'
+                    # R² 和 |r| 均显示绝对值，无符号，2位小数
+                    txt = f'{disp_val:.2f}'
+                    ax_r2.text(j, i, txt, ha='center', va='center',
+                               fontsize=17, fontfamily='Arial', fontweight='bold',
+                               color=text_color)
+
+            # 虚线分隔: adh组(R²+|r|) | size组(R²+|r|)
+            ax_r2.axvline(x=1.5, color='#444444', linewidth=2.0, linestyle='--', alpha=0.8)
+
+            ax_r2.set_xlim(-0.5, n_cols_r - 0.5)
+            ax_r2.set_ylim(-0.5, n_rows - 0.5)
+            ax_r2.set_xticks(range(n_cols_r))
+            ax_r2.set_xticklabels(col_labels_r, fontsize=15, fontfamily='Arial', ha='center')
+            ax_r2.xaxis.set_ticks_position('top')
+            ax_r2.xaxis.set_label_position('top')
+            ax_r2.set_yticks(range(n_rows))
+            ax_r2.set_yticklabels(row_labels, fontsize=20, fontfamily='Arial')
+            ax_r2.invert_yaxis()
+            for spine in ax_r2.spines.values():
+                spine.set_linewidth(2); spine.set_color('black')
+            ax_r2.tick_params(axis='both', length=0)
+
+            # 单色标 (统一 sequential)
+            from mpl_toolkits.axes_grid1 import make_axes_locatable as _mad
+            div_r = _mad(ax_r2)
+            cax_r = div_r.append_axes("right", size="3%", pad=0.3)
+            norm_r = mcolors.Normalize(vmin=0, vmax=VLIM_R)
+            sm_r   = plt.cm.ScalarMappable(cmap=cmap_seq_r, norm=norm_r)
+            sm_r.set_array([])
+            cbar_r = plt.colorbar(sm_r, cax=cax_r, orientation='vertical')
+            cbar_r.set_label('strength', fontsize=14, fontfamily='Arial')
+            cbar_r.ax.tick_params(labelsize=12)
+
+            plt.tight_layout(pad=0.5)
+            fname_D2 = fname_D.replace('.png', '_r.png')
+            fig_r.savefig(f'{output_dir}/{fname_D2}', dpi=300,
+                          bbox_inches='tight', transparent=True)
+            n_drawn += 1
+            plt.close()
+            print(f'  [OK] (D2) univariate-r heatmap: {output_dir}/{fname_D2}')
 
     if args.interactive is not None:
         print('\n' + '=' * 60)
