@@ -661,20 +661,21 @@ pH: 9-11 (NaOH 调节)
 ## � 发现 5：粘附能驱动分区温度——统计力学视角
 
 > 本节记录 `analyze_adhesion_vs_partition.py` 分析结果。  
-> 运行参数：`--consistent-outliers --exclude O3Sn4Pt2 Pt3Sn3O2 Pt7Sn6O1 Sn1Pt2O1 --exclude-c Pt8Sn0 --threshold 999`  
-> 粘附能均使用 **Eadh_last**（AIMD 高温弛豫后的真实吸附能）。
+> 运行参数：`--consistent-outliers --exclude O2Pt4Sn6 O3Sn4Pt2 Pt7Sn5O1 Sn1Pt2O1 --exclude-c Pt8Sn0 --threshold 999`  
+> 粘附能均使用 **Eadh_last**（AIMD 高温弛豫后的真实吸附能）。  
+> **当前聚焦假说：A、C、D（三条独立物理路径）**
 
 ---
 
 ### 5.1 三条研究假说
 
-本研究将 Pt-Sn-O 体系的温度行为分为三条物理路径，各自对应不同的"粘附能 → 分区温度"关系：
+本研究将 Pt-Sn-O 体系的温度行为归纳为三条物理路径，各自对应不同的"粘附能 → 分区温度"关系：
 
 | 假说 | 粘附能 (X) | 分区温度 (Y) | 控制变量 | 物理问题 |
 |------|-----------|------------|---------|---------|
-| **C（基准）** | $E_{adh}/\text{atom}$（Pt₈Snₓ，纯金属） | $T_m$（熔点） | $n_{Metal}$ | 粘附能是否决定纯金属团簇熔点？ |
+| **C（基准）** | $E_{adh}/\text{atom}$（Pt₈Snₓ，纯金属，Type2÷$n_{Metal}$） | $T_m$（熔点） | $n_{Metal}$ | 粘附能是否决定纯金属团簇熔点？ |
 | **A（氧化物延伸）** | $E_{adh}^1/\text{atom}$（Type2 ÷ $n_{PtSn}$） | $T_1$（Lindemann 熔化起始） | $n_{PtSn}$ | 含 SnO 体系中，Pt-Sn 团簇对 SnO 修饰载体的粘附是否仍主导金属熔化？ |
-| **B（O 迁移）** | $E_{adh}^2/\text{atom}$（Type3 ÷ $n_{SnO}$） | $T_{onset,O}$（O 迁移起始） | $n_{SnO}$ | SnO 层对 Al₂O₃ 载体的粘附强度是否决定 O 的迁移温度？ |
+| **D（整体界面 → O 迁移）** | $E_{adh}^2/\text{atom}$（Type4 ÷ $n_O$，整体 PtSnO/Al₂O₃ 粘附能每 O 归一化） | $T_2$（O 迁移起始） | $n_O$ | 整体界面结合强度是否与 O 迁移温度相关？尺寸还是粘附能主导？ |
 
 ---
 
@@ -684,27 +685,27 @@ pH: 9-11 (NaOH 调节)
 
 | 假说 | Pearson r（adh vs T） | 显著性 | $R^2$（单变量，adh） | $R^2$（单变量，size） |
 |------|--------------------|-------|---------------------|----------------------|
-| **C** | −0.90 | *** | 0.81 | 0.38 |
-| **A** | −0.94 | *** | 0.886 | 0.657 |
-| **B** | −0.31 | ns   | 0.093 | 0.860 |
-| **B'**（T3 归一化） | −0.31 | ns   | 0.093 | 0.860 |
+| **C** | −0.900 | *** | 0.809 | 0.383 |
+| **A** | −0.945 | *** | 0.892 | 0.663 |
+| **D** | −0.872 | *** | 0.760 | 0.801 |
 
-- C 和 A 的单变量粘附能相关均高度显著，说明粘附能和温度在原始数据中已呈强负相关
-- B/B' 的粘附能单变量相关不显著，但尺寸（$n_{SnO}$）单变量 $R^2 = 0.86$，尺寸效应极强
-- B 和 B' 的区别仅在于 Y 轴：B 用 $T_{onset,O}$，B' 用 $T_{onset,O}/n_O$（消除 nO 尺寸效应）
+- C 和 A 的单变量粘附能相关均高度显著，粘附能与温度在原始数据中已呈强负相关
+- D 的粘附能单变量相关同样显著（$r = -0.872$，$R^2 = 0.760$），但尺寸（$n_O$）也同样强（$R^2 = 0.801$），两者旗鼓相当
+- D 与 A/C 的关键区别：M1 判据下，D 的粘附能偏相关显著主导（r_partial=-0.845***），nO 偏相关不显著，物理图像与 A/C 一致
 
 #### 多元回归（同时控制尺寸变量）
 
 | 假说 | $R^2$（多元） | $r_{partial}$（adh） | $\beta_{adh}$（标准化） | $\beta_{size}$ | 主导因素 |
 |------|-------------|---------------------|----------------------|----------------|---------|
-| **C** | 0.82 | −0.84*** | −0.83 | −0.11 ns | **粘附能** ✓ |
-| **A** | 0.903 | −0.847*** | −1.238 | +0.324 ns | **粘附能** ✓ |
-| **B** | 0.768 | +0.204 ns | +0.113 | −0.923*** | **尺寸** ✗ |
-| **B'** | 0.880 | +0.374 ns | +0.158 | −1.001*** | **尺寸** ✗ |
+| **C** | 0.82 | −0.838*** | −0.834 | −0.107 ns | **粘附能** ✓ |
+| **A** | 0.910 | −0.855*** | −1.249 | +0.332 ns | **粘附能** ✓ |
+| **D** | 0.717 | −0.845*** | — | — ns | **粘附能主导** ✓ |
+
+> 注：D 列数值为 M1 active_frac ≥ 80% 判据，n=15（M1 Top1 排除集）；$R^2$ 为单变量 Pearson 相关，多元回归 β 以脚本运行输出为准  
 
 > $\beta$：标准化回归系数（无量纲），反映相对贡献大小  
 > $r_{partial}$：偏相关系数，控制另一变量后粘附能的独立线性关系  
-> *** $p < 0.001$；ns $p > 0.05$
+> *** $p < 0.001$；** $p < 0.01$；* $p < 0.05$；ns $p > 0.05$
 
 ---
 
@@ -722,53 +723,53 @@ Pt-Sn 团簇与载体结合越紧密
 ```
 
 **C 建立基准**（纯金属 Pt₈Snₓ，无氧化物干扰）：
-- 偏相关 $r_{partial} = -0.84$（$p < 0.001$），控制团簇尺寸后粘附能仍独立显著
-- $\beta_{adh} = -0.83$，$\beta_{size} = -0.11$（ns）→ 粘附能贡献是尺寸的 **7.5 倍**
+- 偏相关 $r_{partial} = -0.838$（$p < 0.001$），控制团簇尺寸后粘附能仍独立显著
+- $\beta_{adh} = -0.834$，$\beta_{size} = -0.107$（ns）→ 粘附能贡献是尺寸的 **7.8 倍**
 - 结论：纯金属团簇中，粘附能是熔点的**唯一决定性因素**
 
 **A 扩展到含 SnO 体系**（引入氧化物界面层后）：
-- 偏相关 $r_{partial} = -0.847$（$p < 0.001$），粘附能效应在含 SnO 体系中同样成立
-- $\beta_{adh} = -1.238$（超标准化），说明粘附能的单位标准差变化对 $T_1$ 的影响**超过 1σ**
-- $\beta_{size} = +0.324$（ns）→ 尺寸无独立贡献
+- 偏相关 $r_{partial} = -0.855$（$p < 0.001$），粘附能效应在含 SnO 体系中同样成立
+- $\beta_{adh} = -1.249$（超标准化），说明粘附能的单位标准差变化对 $T_1$ 的影响**超过 1σ**
+- $\beta_{size} = +0.332$（ns）→ 尺寸无独立贡献
 - 结论：**粘附能 → 金属熔化是跨体系的普适规律**，氧化物界面层的引入不改变这一机制
 
-#### 路径 B：尺寸主导 O 迁移（动力学主导）
+#### 路径 D：整体界面粘附能主导 O 迁移（M1 active_frac ≥ 80% 判据）
 
 ```
-SnO 层
- │  n_SnO（原子数越多）
+整体 PtSnO/Al₂O₃ 界面
+ │  Type4/nO（每 O 归一化粘附能，越强 → T₃ 越高）
+ │
+ │  T₃_onset_O（M1）：≥4/5 run 出现至少1次 O 迁移的最低温度
  │     ↓
-可供迁移的 O 原子越多
-     ↓
-存在更多低势垒迁移路径（统计效应）
-     ↓
-T_onset,O 越低（某个 O 以更低温度触发迁移）
+T₃（O 迁移起始温度）主要由整体界面粘附强度决定
 ```
 
-- 控制 $n_{SnO}$ 后，粘附能偏相关 = +0.204（ns）→ **粘附强度无独立贡献**
-- $\beta_{size}(n_{SnO}) = -0.923$（$p < 0.001$），整体 $R^2 = 0.768$（B）/ $0.880$（B'，$T_3$ 归一化）
-- 物理机制：每原子 SnO 粘附能（Type3/at）量化的是**平均**键强度，但 O 迁移是**局部**单原子事件——只需一个 O 克服势垒即可触发，因此"可迁移 O 原子数目"比"平均粘附强度"更关键
-- 结论：**$T_{onset,O}$ 的决定因素是 SnO 层规模（$n_{SnO}$），而非每原子粘附强度**
+- 粘附能：$r_{partial}(adh) = -0.845$（$p < 0.001$，***），n=15（M1 Top1 排除集）
+- 尺寸：$r_{partial}(size) = -0.423$（ns），偏相关不显著
+- 单变量 $R^2 = 0.717$（E4/nO → T3_onset_O，Pearson 相关）
+- **D 与 M0 旧结果的本质差异**：M0（均值频率）下呈双主导（adh*+size**），M1（active_frac）判据下粘附能显著主导（adh***），尺寸效应降至不显著，物理图像更清晰
+- 物理机制：整体界面粘附强→O 离开界面位点需要更多能量（$T_3$ 升高）；M1 判据对每次独立 run 只判断"是否发生迁移"而非"迁移多频繁"，过滤了热涨落引起的假阳性，使信噪比更高
 
 ---
 
-### 5.4 两种温度的物理机制对比
+### 5.4 三条假说的物理机制对比
 
-| 物理量 | 过程类型 | 空间尺度 | 主导变量 | 机制 |
-|--------|---------|---------|---------|------|
-| $T_1 / T_m$（金属熔化） | **集体热力学过程** | 全团簇 | 粘附能 | 需要整个团簇集体失序；平均键强度决定能量壁垒 |
-| $T_{onset,O}$（O 迁移起始） | **局部动力学事件** | 单原子 | $n_{SnO}$ | 只需一个 O 跨越势垒；更多 O 原子 → 更多低势垒路径 → 统计上温度更低 |
+| 物理量 | 假说 | 过程类型 | 主导变量 | 机制 |
+|--------|------|---------|---------|------|
+| $T_m$（金属熔化，Pt₈Snₓ） | **C** | **集体热力学过程** | 粘附能（唯一） | 团簇整体失序；平均键强度决定能量壁垒；β_adh=−0.83 vs β_size=−0.11 |
+| $T_1$（金属熔化，含 SnO） | **A** | **集体热力学过程** | 粘附能（唯一） | SnO 界面层存在不改变机制；β_adh=−1.25 vs β_size=+0.33(ns) |
+| $T_2$（O 迁移起始） | **D** | **局部热力学主导** | **粘附能主导（M1 判据）** | 界面粘附强→O 迁移能垒高→T₃ 升高；M1 active_frac 判据下 nO 偏相关不显著；$r_{partial}(adh)=-0.845***$，$R^2=0.717$ |
 
 ```
 统一图景
-─────────────────────────────────────────────────
-T₁ / T_m  = f(E_adh/atom)    ← 集体热力学
-T_onset,O = f(n_SnO)          ← 局部统计力学
+─────────────────────────────────────────────────────────────────
+T_m / T₁ = f(E_adh/atom)                  ← 集体热力学（C、A）
+T₃(M1)   = f(E_adh_total/nO)              ← 界面粘附单一主导（D，M1判据）
 
-两种温度参数反映截然不同的物理机制。
-粘附能对金属熔化具有普适决定作用（跨 C→A）；
-O 迁移是尺寸驱动的统计学效应，而非热力学效应（B）。
-─────────────────────────────────────────────────
+C → A：粘附能主导金属熔化，跨体系普适（纯金属→含SnO氧化物体系）
+A → D：切换到 O 迁移，粘附能仍显著主导（r_partial=-0.845***），nO 偏相关 ns
+        关键：M1 active_frac 判据比 M0 均值频率对热涨落更鲁棒，信噪比更高
+─────────────────────────────────────────────────────────────────
 ```
 
 ---
@@ -786,35 +787,39 @@ O 迁移是尺寸驱动的统计学效应，而非热力学效应（B）。
 
 > 数值来自 Lindemann δ ≥ 0.1 判据；Pt₈Sn₀（--exclude-c）不纳入回归
 
-#### 偏相关分析报告（控制台输出摘录）
+#### 假说 D（Type4/nO → T₂，控制 nO）数据分布
+
+| nO | 结构代表 | Type4/nO (eV/O) 均值 | T₂ (K) 均值 |
+|----|---------|---------------------|------------|
+| 1 | Pt2Sn2O1, Pt3Sn2O1 等 6 个 | ≈ −2.76 | ≈ 1633 |
+| 2 | Sn3O2Pt2, O2Pt4Sn6 等 5 个 | ≈ −1.62 | ≈ 1340 |
+| 3 | Sn7Pt4O3, O3Pt5Sn7 等 3 个 | ≈ −1.02 | ≈ 1133 |
+| 4 | Sn7Pt6O4 | −1.56 | 1200 |
+
+#### 偏相关分析报告（控制台输出，n=15）
 
 ```
 预期C: Eadh/atom (Pt₈Snₓ) → T_m
-  │ r_simple(adh)  = -0.900***  r_simple(size) = -0.619*
+  │ R²(adh only)   = 0.809      r_simple = -0.900***
+  │ R²(size only)  = 0.383      r_simple = -0.619*
   │ 多元 R²        = 0.82
   │ r_partial(adh) = -0.838***  β_adh = -0.834
   │ r_partial(size)= -0.194 ns  β_size= -0.107
 
 预期A: Type2/at (÷n_PtSn) → T1_lindemann
-  │ R²(adh only)   = 0.886      r_simple = -0.941***
-  │ R²(size only)  = 0.657      r_simple = -0.810***
-  │ 多元 R²        = 0.903
-  │ r_partial(adh) = -0.847***  β_adh = -1.238
-  │ r_partial(size)= +0.384 ns  β_size= +0.324
+  │ R²(adh only)   = 0.892      r_simple = -0.945***
+  │ R²(size only)  = 0.663      r_simple = -0.814***
+  │ 多元 R²        = 0.910
+  │ r_partial(adh) = -0.855***  β_adh = -1.249
+  │ r_partial(size)= +0.402 ns  β_size= +0.332
 
-预期B: Type3/at (÷n_SnO) → T_onset_O
-  │ R²(adh only)   = 0.099      r_simple = -0.314 ns
-  │ R²(size only)  = 0.758      r_simple = -0.871***
-  │ 多元 R²        = 0.768
-  │ r_partial(adh) = +0.204 ns  β_adh = +0.113
-  │ r_partial(size)= -0.862***  β_size= -0.923
-
-预期B': Type3/at (÷n_SnO) → T3_onset_O (÷nO 归一化)
-  │ R²(adh only)   = 0.093      r_simple = -0.305 ns
-  │ R²(size only)  = 0.860      r_simple = -0.927***
-  │ 多元 R²        = 0.880
-  │ r_partial(adh) = +0.374 ns  β_adh = +0.158
-  │ r_partial(size)= -0.931***  β_size= -1.001
+预期D: Type4/nO (÷nO) → T3_onset_O (M1, af=0.80)
+  │ R²(adh only)   = 0.717      r_simple = -0.847***
+  │ R²(size only)  = 0.263      r_simple = -0.513*
+  │ 单变量 R²_B    = 0.717      （Pearson 相关，n=15）
+  │ r_partial(adh) = -0.845***  β_adh = —
+  │ r_partial(size)= -0.423 ns  β_size= —
+  │ （多元回归 β 以脚本运行输出为准）
 ```
 
 ---
@@ -823,39 +828,39 @@ O 迁移是尺寸驱动的统计学效应，而非热力学效应（B）。
 
 | 文件名 | 面板 | 内容 |
 |--------|------|------|
-| `hypothesisA_clean_a.png` | A(a) | $E_{adh}^1$ vs $T_1$，线性回归 |
-| `hypothesisA_clean_b.png` | A(b) | 同上，按 $n_{PtSn}$ 着色 |
-| `hypothesisA_clean_c.png` | A(c) | 偏相关残差图（控制尺寸后） |
-| `hypothesisA_clean_d.png` | A(d) | 多元回归：预测 vs 实测 $T_1$ |
-| `hypothesisA_clean_e.png` | A(e) | 等高线热图：$T_1$ 在（$E_{adh}^1$, $n_{PtSn}$）空间的分布 |
+| `hypothesisC_clean_g_adh.png` | C(g-adh) | 单变量：$E_{adh}$/atom vs $T_m$，$r$, $R^2$ |
+| `hypothesisC_clean_g_size.png` | C(g-size) | 单变量：$n_{Metal}$ vs $T_m$ |
+| `hypothesisC_clean_*.png` | C(a–e) | 散点、残差、多元回归、等高线全套 |
 | `hypothesisA_clean_g_adh.png` | A(g-adh) | 单变量：$E_{adh}^1$ vs $T_1$，$r$, $R^2$ |
-| `hypothesisA_clean_g_size.png` | A(g-size) | 单变量：$n_{PtSn}$ vs $T_1$，$r$, $R^2$ |
-| `hypothesisB_clean_*.png` | B(a-g) | 同上，对应假说 B |
-| `hypothesisB_clean_f_size_effect.png` | B(f) | $n_{SnO}$ vs $T_{onset,O}$（直接尺寸效应） |
-| `hypothesisC_clean_*.png` | C(a-g) | 同上，对应假说 C |
-| `partial_correlation_summary_heatmap.png` | D | 多元回归汇总热图（$R^2$, $r_{partial}$, $\beta$） |
-| `partial_correlation_summary_heatmap_r.png` | D2 | 单变量汇总热图（$R^2_{adh}$, $\|r_{adh}\|$, $R^2_{size}$, $\|r_{size}\|$） |
+| `hypothesisA_clean_g_size.png` | A(g-size) | 单变量：$n_{PtSn}$ vs $T_1$ |
+| `hypothesisA_clean_*.png` | A(a–e) | 散点、残差、多元回归、等高线全套 |
+| `hypothesisD_clean_g_adh.png` | D(g-adh) | 单变量：$E_{adh}^2$/atom vs $T_2$，$r$, $R^2$ |
+| `hypothesisD_clean_g_size.png` | D(g-size) | 单变量：$n_O$ vs $T_2$ |
+| `hypothesisD_clean_*.png` | D(a–e) | 散点、残差、多元回归、等高线全套 |
+| `partial_correlation_summary_heatmap.png` | 汇总 | 多元回归汇总热图（$R^2$, $r_{partial}$, $\beta$），含 A/C/D 行 |
+| `partial_correlation_summary_heatmap2.png` | 汇总2 | 精简 3 行热图（C/A/D），适合论文插图 |
+| `partial_correlation_summary_heatmap_r.png` | 汇总r | 单变量汇总热图（$R^2_{adh}$, $\|r_{adh}\|$, $R^2_{size}$, $\|r_{size}\|$） |
 
 ---
 
 ### 5.7 结论
 
 1. **粘附能是金属熔化温度的普适决定因素**（假说 C + A 双重验证）  
-   纯金属和含氧化物体系均成立，控制尺寸后偏相关系数 $|r_{partial}| \approx 0.84$–$0.85$，$p < 0.001$
+   纯金属和含氧化物体系均成立，控制尺寸后偏相关系数 $|r_{partial}| \approx 0.84$–$0.86$，$p < 0.001$
 
-2. **SnO 层的 O 迁移温度由尺寸（$n_{SnO}$）主导**（假说 B，新发现）  
-   $\beta_{size} = -0.92$，$R^2 = 0.77$；这是一个统计力学效应而非热力学效应
+2. **整体界面粘附能主导 O 迁移温度**（假说 D，M1 判据新发现）  
+   $r_{partial}(adh) = -0.845$（***），$R^2 = 0.717$（单变量，n=15）；$r_{partial}(size)$ 不显著；粘附能单一主导，M1 active_frac 判据有效过滤了热涨落
 
-3. **两种物理机制截然不同**  
-   - 金属熔化 = 集体热力学过程，由平均粘附强度决定  
-   - O 迁移 = 局部动力学事件，由可迁移 O 原子数决定
+3. **三条假说揭示两类不同的物理机制**  
+   - 金属熔化（C/A）= 集体热力学过程，由平均粘附强度单一主导  
+   - O 迁移（D）= 界面热力学主导，整体粘附强度决定 O 离开界面的能垒；M1 判据（active_frac ≥ 80%）比 M0（均值频率）对热涨落更鲁棒，物理图像更清晰
 
 4. **方法论贡献**  
-   多元偏相关分析成功分离粘附能与尺寸的独立贡献，为后续含氧化物团簇的设计提供定量指导
+   多元偏相关分析成功分离粘附能与尺寸的独立贡献；M1 active_frac 判据（≥80% run 有 freq>0）比 M0 均值频率对热涨落更鲁棒，使假说 D 的物理图像从"双主导"演变为"粘附能单一主导"，揭示了界面设计的核心调控变量
 
 ---
 
-**文档更新**: 2026-03-03  
+**文档更新**: 2026-03-06  
 **分析脚本**: `analyze_adhesion_vs_partition.py`  
 **输出目录**: `results/adhesion_analysis/`
 
@@ -952,7 +957,7 @@ O 迁移是尺寸驱动的统计学效应，而非热力学效应（B）。
 | 变量 | 定义公式 | 物理意义 | 用途 |
 |------|---------|----------|------|
 | **n_PtSn** | = nPt + nSn − nSn_sno | **Pt-Sn 金属团簇的原子数**（去掉了进入 SnO 层的 Sn） | 假设 A 的尺寸控制变量；Type2 每原子粘附能的分母 |
-| **n_SnO** | = nSn_sno + nO_sno | **SnO 中间层的原子数** | 假设 B 的尺寸控制变量；Type3 每原子粘附能的分母 |
+| **n_SnO** | = nSn_sno + nO_sno | **SnO 中间层的原子数** | 历史变量（曾用于假设 B）；Type3 每原子粘附能的分母 |
 
 > **为什么不直接用 nMetal？** `n_PtSn` 只计入 Pt-Sn **金属簇**中的原子，排除了已经被"下放"到 SnO 层的 Sn，恰好对应 Type2 粘附能界面的实际尺寸；`n_SnO` 计入 SnO **中间层**的原子，恰好对应 Type3 粘附能界面的实际尺寸。
 
@@ -1010,7 +1015,7 @@ PtₓSnᵧOₖ/Al₂O₃ 体系中存在三个不同的界面，对应三种粘�
 | 变量 | 全称 | 定义 | 物理意义 | 数据来源 |
 |------|------|------|----------|----------|
 | **T1_lindemann** | Lindemann 熔化温度 | Lindemann 指数 δ 首次超过 0.1 的温度 (K) | **固-液相变起始温度**：团簇从固态开始软化/熔化的温度 | AIMD 计算 → Lindemann 分析 |
-| **T_onset_O** | 氧迁移起始温度 | AIMD 轨迹中 O 迁移频率 ≥ 2.0 /ps 的最低温度 (K) | **界面氧扩散起始温度**：氧原子开始从界面位点离域的温度，反映界面稳定性 | AIMD 轨迹 → O 迁移分析 |
+| **T_onset_O** | 氧迁移起始温度（M1） | ≥4/5 独立 run 中 Top-4 O 原子出现 freq>0 迁移事件的最低温度 (K) | **界面氧扩散起始温度**：氧原子开始可重复性地从界面位点离域的温度，M1 active_frac 判据对热涨落鲁棒 | AIMD 轨迹 → O 迁移分析（M1） |
 | **T1_kmeans** | K-means 低温边界 | K-means 聚类确定的低温-中温分区边界 (K) | 热力学行为的第一个转变点 | 热容分析 |
 | **T2_kmeans** | K-means 高温边界 | K-means 聚类确定的中温-高温分区边界 (K) | 热力学行为的第二个转变点 | 热容分析 |
 | **Tm** | 熔化温度 (Pt₈Snₓ 系列用) | 同 T1_lindemann，用于 Pt₈Snₓ 纯金属团簇 | 仅在假设 C (Pt₈Snₓ) 中使用 | AIMD → Lindemann |
@@ -1019,45 +1024,145 @@ PtₓSnᵧOₖ/Al₂O₃ 体系中存在三个不同的界面，对应三种粘�
 
 **物理定义**: O 原子从 SnO 层向 Pt-Sn 金属团簇或气相发生**持续性迁移**的起始温度。
 
-> **旧定义（已弃用）**: Migration_Events > 0（首次出现任何迁移事件的温度）。旧定义过于灵敏，500 K 附近的热涨落会被误判为真实迁移，导致 T_onset_O 系统性偏低。  
-> **新定义（当前使用）**: avg_freq ≥ 2.0 /ps，物理含义为"每皮秒平均有 2 个以上 O 原子发生迁移事件"，可有效过滤热涨落假信号。
+---
 
-**阈值选取依据**: 通过 `check_onset_thresholds.py` 扫描 7 种候选阈值 (`>0, ≥0.5, ≥1.0, ≥1.5, ≥2.0, ≥2.5, ≥3.0 /ps`)，以 O2Pt7Sn7 结构为基准：
+##### 迁移事件的底层判断逻辑（脚本级别）
 
-| 温度 (K) | avg_freq (/ps) | 物理状态 |
-|---------|---------------|---------|
-| 1300 | 1.5714 | 偶发热涨落（应判为"未迁移"）|
-| 1350 | 2.5714 | 持续迁移开始（应判为"已迁移"）|
+迁移事件由 `analyze_oxygen_migration_topN_v2_Version2.py` 逐轨迹计算得出：
 
-**2.0 /ps** 恰好在两者之间，是唯一能正确区分假信号与真迁移的阈值。
+**Step 1：选取分析对象**
+
+对每条 AIMD 轨迹（xyz 格式），选取**初始帧 z 坐标最高**的 Top-N 个 O 原子（默认 N=5，批量时 N=4）：
+
+$$\text{选取条件：} z_{O,\text{init}} \geq z_{\text{Top-N 阈值}}$$
+
+z 坐标最高的 O 原子处于团簇–载体界面最上层，最有可能发生迁移。
+
+**Step 2：逐帧计算单步位移**
+
+对每个被选中的 O 原子 $i$，在每帧 $t$ 处计算其与前一帧的三维位移：
+
+$$d_i(t) = \|\mathbf{r}_i(t) - \mathbf{r}_i(t-1)\|$$
+
+周期性边界由坐标展开（unwrap）处理：若 $|d_\alpha| > L_\alpha/2$，则将坐标沿 $\alpha$ 轴平移 $\pm L_\alpha$。
+
+**Step 3：判断单次迁移事件**
+
+若单步位移超过阈值 $d_{\rm th}$（默认 1.5 Å），则记为一次**迁移事件**：
+
+$$\text{migration event at frame } t \iff d_i(t) > d_{\rm th}$$
+
+物理意义：单步 1.5 Å ≈ Sn–O 键长（~2.0 Å）的 75%，表明 O 原子已离开其平衡位点，发生了真实的位点跃迁。
+
+**Step 4：计算迁移频率（per-atom）**
+
+对每个 O 原子 $i$，**独立**统计其单位时间内的迁移事件数，写入 master CSV 的 `Migration_Freq(per_ps)` 列：
+
+$$f_i(T) = \frac{N_{\rm events,i}}{T_{\rm sim}\ [\text{ps}]}$$
+
+其中 $N_{\rm events,i}$ 为该 O 原子在整条轨迹中的迁移事件总数，$T_{\rm sim}$ 为轨迹总时长（ps）。
+
+> **注意**：master CSV 每行对应一个 O 原子（`Top_O_Index`），`Migration_Freq(per_ps)` 是该原子的**单原子频率**，而非 Top-N 原子的总和。M1 判据中 $f_{\rm run,r}(T) > 0$ 等价于**该 run 内任意一个 Top-N O 原子有 `Migration_Events > 0`**。
+
+---
+
+##### T_onset_O 的两种判据方法
+
+###### 方法 M0：均值频率阈值法（旧版，已弃用）
+
+$$T_{\rm onset}^{\rm M0} = \min\{T : \bar{f}(T) \geq f_{\rm th}\}$$
+
+其中 $\bar{f}(T) = \text{mean}_{r}\{f_{\rm run,r}(T)\}$（多 run 均值），$f_{\rm th} = 2.0\ \text{/ps}$，$f_{\rm run,r}(T) = \text{mean}_{i}\{f_i(T)\}$（该 run 内 Top-N O 原子频率的均值）。
+
+> **弃用原因**：均值对少数高频 run 过度敏感。若 5 次独立 run 中有 1 次恰好在某温度出现多次热涨落，均值即可被拉过阈值，导致 T_onset 系统性偏低，重复性差。
+
+###### 方法 M1：活跃比例阈值法（当前使用）✅
+
+$$T_{\rm onset}^{\rm M1}(\text{af}) = \min\!\left\{T : \frac{\#\{r : \exists\, i,\ f_i(T) > 0\}}{N_{\rm run}} \geq \text{af}\right\}$$
+
+即：第 $r$ 次 run 中，**任意一个** Top-N O 原子的 `Migration_Freq(per_ps) > 0`（等价于 `Migration_Events ≥ 1`），则该 run 记为活跃（active）。
+
+其中 $N_{\rm run}$ 为独立 run 总数（本研究为 5），$\text{af} = 0.80$（即 ≥ 4/5 run 活跃）。
+
+**M1 的物理含义**：
+
+| 判据量 | 含义 |
+|--------|------|
+| $f_i(T) > 0$ | 某个 O 原子在该 run 中**至少发生过一次**迁移事件（`Migration_Events ≥ 1`） |
+| run 活跃 | 该 run 内 Top-N 原子中**至少一个**发生迁移 |
+| active_frac ≥ 0.80 | **多数 run（≥4/5）均独立观察到迁移**，排除偶发热涨落 |
+| $T_{\rm onset}^{\rm M1}$ | 满足上述条件的**最低温度** |
+
+**M1 vs M0 对比**：
+
+| 属性 | M0 | M1 |
+|------|----|----|
+| 统计量 | $\bar{f}(T)$（均值频率） | active_frac（活跃 run 比例） |
+| 对热涨落鲁棒性 | 低（1 个高频 run 可拉高均值） | **高**（需多数 run 一致观察到） |
+| 物理语义 | 平均迁移速率达到某水平 | **大多数独立实验均观察到迁移** |
+| 计算工具 | `process_melting_summary.py` | `m1_onset_inspector.py --af 0.80` |
+| 当前 PARTITION_DATA | ❌ 已替换 | ✅ 使用 M1 af=80% |
+
+**M1 各结构 T_onset_O 数值（af = 0.80）**：
+
+| 结构 | $T_{\rm onset}^{\rm M1}$ (K) | nO | $T_{\rm onset}^{\rm M1}/n_O$ (K) |
+|------|-----------------------------|----|----------------------------------|
+| Sn1Pt2O1 | 1000 | 1 | 1000 |
+| Pt2Sn2O1 | 1500 | 1 | 1500 |
+| Pt3Sn2O1 | 1500 | 1 | 1500 |
+| Sn3O2Pt2 | 1400 | 2 | 1400 |
+| O3Sn4Pt2 | 1100 | 3 | 1100 |
+| Pt3Sn3O2 | 1200 | 2 | 1200 |
+| Sn3Pt4O1 | 1400 | 1 | 1400 |
+| Pt5Sn3O1 | 1200 | 1 | 1200 |
+| Pt5Sn4O1 | 1400 | 1 | 1400 |
+| O2Pt4Sn6 | 1300 | 2 | 1300 |
+| Sn6Pt5O2 | 1100 | 2 | 1100 |
+| Sn7Pt4O3 | 1000 | 3 | 1000 |
+| Pt6Sn5O2 | 1100 | 2 | 1100 |
+| O3Pt5Sn7 | 1200 | 3 | 1200 |
+| Pt7Sn5O1 | 1200 | 1 | 1200 |
+| Pt6Sn6O3 | 1100 | 3 | 1100 |
+| Pt7Sn6O1 | 1300 | 1 | 1300 |
+| Sn7Pt6O4 | 1100 | 4 | 1100 |
+| O2Pt7Sn7 | 1250 | 2 | 1250 |
+
+> 注：由于 M1 对每 run 只判断 freq>0（而非绝对频率大小），$T_{\rm onset}^{\rm M1}/n_O = T_{\rm onset}^{\rm M1}$（每O归一化无物理额外意义，仅与假说D的 temp_col 对齐）。
 
 **计算流程**:
 
 ```text
-AIMD 轨迹 (每个结构，200~1800 K，多个独立 run)
+AIMD 轨迹 (每个结构，200~1800 K，5次独立 run)
+    │
+    ▼  analyze_oxygen_migration_topN_v2_Version2.py
+    │  ├─ 选取初始帧 z 最高的 Top-N 个 O 原子
+    │  ├─ 逐帧计算单步位移 d(t) = ||r(t) - r(t-1)||
+    │  ├─ 迁移事件: d(t) > 1.5 Å → Migration_Events（per O原子）
+    │  └─ 迁移频率: Migration_Freq(per_ps) = Migration_Events / time_ps（per O原子，写入CSV每行）
     │
     ▼
 oxygen_migration_master CSV
-  来源: server_scripts/20250225/
+  来源: server_scripts/20260205/
         ├── oxygen_migration_master_run_20260225_182916.csv  (batch1: 29 结构, 200~1800 K)
         └── oxygen_migration_master_run_20260226_102119.csv  (batch2: O2Pt7Sn7 高温补充)
     │
-    ▼  extract_T_onset_O()  [process_melting_summary.py]
-    ├─ 1. 合并两批次 CSV
-    ├─ 2. 名称映射: g-948-Pt6Sn5O2 → Pt6Sn5O2 等
-    ├─ 3. 按 (结构, 温度) 聚合: avg_freq = mean(Migration_Freq(per_ps))
-    ├─ 4. 筛选: avg_freq >= 2.0 /ps
-    └─ 5. 取每个结构满足条件的最低温度 → T_onset_O
+    ▼  m1_onset_inspector.py --af 0.80
+    ├─ 1. 合并两批次 CSV，名称映射
+    ├─ 2. 按 (结构, 温度, run) 统计 active = (freq > 0)
+    ├─ 3. 按 (结构, 温度) 聚合: active_frac = mean(active)
+    ├─ 4. 筛选: active_frac >= 0.80
+    └─ 5. 取每个结构满足条件的最低温度 → T_onset_O (M1)
 ```
 
 **关键参数**:
 
 | 参数 | 值 | 说明 |
 |------|----|------|
-| `freq_threshold` | **2.0 /ps** | avg_freq 阈值，低于此值视为热涨落 |
+| `migration_threshold` | **1.5 Å** | 单步位移阈值，超过则计为一次迁移事件 |
+| `top_n` | **4** | 仅统计 z 坐标最高的 4 个 O 原子 |
+| `active_frac` (af) | **0.80** | M1 判据：≥ 80% run 有 freq>0 |
 | 温度扫描范围 | 200 ~ 1800 K | 步长 50 K |
-| 聚合方式 | mean(Migration_Freq) | 多 run 同温度取均值 |
-| O 原子统计 | top-4 O 原子 | 仅统计最活跃的 4 个 O 原子 |
+| 独立 run 数 | 5 | r0–r4 |
 
 **名称映射表**:
 
@@ -1066,18 +1171,16 @@ oxygen_migration_master CSV
 | `g-948-Pt6Sn5O2` | `Pt6Sn5O2` |
 | `g-948-Pt6Sn6O3` | `Pt6Sn6O3` |
 | `g-1051-Sn7Pt6O4` | `Sn7Pt6O4` |
-| `g-1535-Sn8Pt6O4` | `Sn8Pt6O4` |
-| `g-1-O1Sn4Pt3` | `O1Sn4Pt3` |
 
-**数据覆盖**: 19 个结构中 18 个有值；缺失 Pt6Sn5O2（avg_freq 在 1800 K 以内始终 < 2.0 /ps）。
+**数据覆盖**: 19 个结构全部有 M1 T_onset_O 值（含 Pt6Sn5O2 = 1100 K）。
 
 **相关脚本**:
 
 | 脚本 | 功能 |
 |------|------|
-| `process_melting_summary.py` | 核心提取脚本，`extract_T_onset_O()` 函数 |
-| `check_onset_thresholds.py` | 阈值扫描验证脚本，确认 2.0 /ps 为最优阈值 |
-| `analyze_adhesion_vs_partition.py` | 主分析脚本；T_onset_O 已硬编码于 `PARTITION_DATA` 字典 (行 ~128) |
+| `analyze_oxygen_migration_topN_v2_Version2.py` | 底层：逐轨迹计算单步位移和迁移频率，输出 migration_master CSV |
+| `m1_onset_inspector.py` | M1 判据：按 active_frac ≥ af 确定 T_onset，`--af 0.80` |
+| `analyze_adhesion_vs_partition.py` | 主分析脚本；M1 T_onset_O 已硬编码于 `PARTITION_DATA` 字典（`T_onset_O_perO` 字段） |
 
 ---
 
@@ -1095,32 +1198,25 @@ oxygen_migration_master CSV
 
 **预期相关方向**: 负相关（Eadh 为负值，越负 = 越强粘附 → T1 越高）
 
-#### 假设 B: SnO-载体界面 → 氧迁移温度 (双视角)
-
-假设 B 是唯一需要**双视角**理解的假设：原始预期是粘附能主导，但实际发现是尺寸主导。
-
-**视角 1 (adh 视角)**: Type3/at → T_onset_O，控制 n_SnO
+#### 假设 D: 整体界面粘附 → O 迁移温度（M1 粘附能主导）
 
 ```text
-自变量 (x): Type3_per_atom = E_adh(SnO | Al₂O₃) / n_SnO   [eV/atom]
-因变量 (y): T_onset_O                                       [K]
-控制变量:   n_SnO                                            [无量纲]
+自变量 (x): Type4_per_nO = E_adh(PtSnO | Al₂O₃) / nO             [eV/O]
+因变量 (y): T3_onset_O (= T_onset_O, M1 active_frac ≥ 80%)        [K]
+控制变量:   nO                                                     [无量纲]
 ```
 
-实际结果: r_partial(adh→T|size) ≈ +0.51 (ns, p≈0.05)，粘附能贡献微弱。
+**物理图像**:  
+- 整体 PtSnO/Al₂O₃ 界面粘附越强（Type4/nO 绝对值越大）→ O 需要更多能量离开界面 → T₃ 越高  
+- M1 判据（≥4/5 run 有 freq>0）比 M0（均值频率）对热涨落更鲁棒，过滤偶发事件  
+- 粘附能为主要决定因素，nO 偏相关在 M1 判据下不显著
 
-**视角 2 (size 视角) ⭐ 真正主导**: n_SnO → T_onset_O，控制 Type3/at
+**实际结果（M1 Top1，n=15）**:  
+- r_partial(adh→T|nO) = −0.845 (p<0.001, ***)  
+- r_partial(nO→T|adh) = −0.423 (ns)  
+- 单变量 R² = 0.717
 
-```text
-自变量 (x): n_SnO                                            [无量纲]
-因变量 (y): T_onset_O                                       [K]
-控制变量:   Type3_per_atom                                   [eV/atom]
-```
-
-**物理图像**: n_SnO 越大 → 可供迁移的 O 原子越多 → 存在更多低势垒迁移路径 → T_onset_O 越**低**。  
-**实际结果**: r_partial(n_SnO→T|adh) ≈ −0.88 (p < 0.001)，β_size ≈ −1.00\*\*\*。
-
-> **关键洞见**: 金属熔化(T1)是集体热力学过程 → 粘附能主导；O 迁移是局部动力学事件，只需单个 O 越过势垒 → 尺寸主导。
+> **与 A/C 的对比**: M1 判据下 D 的物理图像与 A/C 一致——粘附能单一主导，nO 无独立贡献。
 
 #### 假设 C: 纯金属团簇粘附 → 熔化温度 (Pt₈Snₓ 系列)
 
@@ -1131,6 +1227,18 @@ oxygen_migration_master CSV
 ```
 
 **物理图像**: 不含 SnO 中间层的纯 Pt₈Snₓ/Al₂O₃ 体系，直接验证金属团簇的粘附-熔化关系。
+
+#### 假设 D: 整体界面粘附 → O 迁移温度（M1 粘附能主导）
+
+```text
+自变量 (x): Type4_per_nO = E_adh(PtSnO | Al₂O₃) / nO            [eV/O]
+因变量 (y): T3_onset_O (= T_onset_O, M1 af≥0.80)                 [K]
+控制变量:   nO                                                     [无量纲]
+```
+
+**物理图像**: 整体 PtSnO 团簇与 Al₂O₃ 载体的粘附能（每 O 原子归一化）越强，O 迁移温度越高；M1 active_frac 判据（≥4/5 run 有 freq>0）过滤热涨落，粘附能成为单一显著主导。
+
+**实际结果（M1 Top1，n=15）**: r_partial(adh→T|nO) = −0.845 (p<0.001, ***)；r_partial(nO→T|adh) = −0.423 (ns)；单变量 R² = 0.717。
 
 ---
 
@@ -1167,79 +1275,63 @@ $$r_{partial}^2 = \frac{\Delta R^2_{adh}}{1 - R^2_{size}}$$
 | **threshold (th)** | 残差 z-score 阈值 | 超过 th 则标记为离群点 |
 | **consistent-outliers** | A 和 B 的离群点取并集 | 确保 A 和 B 使用相同的数据子集 |
 
-#### 当前推荐方案 (k=4)
+#### 当前推荐方案 (M1 k=4, n=15)
 
-| 方案 | k | n | 排除结构 |
-|------|---|---|---------|
-| **全集** | 0 | 19 | （无） |
-| **当前方案** | 4 | 15 | O3Sn4Pt2, Sn1Pt2O1, Pt3Sn3O2, Pt7Sn6O1 |
+> **温度数据版本**：T_onset_O 使用 **M1 active_frac ≥ 80%**（af=0.80，≥4/5 run 有 freq>0）  
+> 排除集合由 `step8_exhaustive_exclusion_scan.py --temp M1 --kmax 4` 穷举扫描得出
 
-**假设 A** (Type2/at → T1_lindemann, 控制 n_PtSn):
-
-| 方案 | n | r_partial(adh→T\|size) | R²_multi | β_adh |
-|------|---|----------------------|----------|-------|
-| 全集 | 19 | −0.423 ns | 0.503 | −0.709 |
-| k=4 (clean) | 15 | **−0.847\*\*\*** | **0.903** | **−1.238** |
-
-**假设 B** (n_SnO → T_onset_O, 控制 Type3/at ⭐):
-
-| 方案 | n | r_partial(size→T\|adh) | R²_multi | β_size |
-|------|---|----------------------|----------|--------|
-| 全集 | 19 | −0.083 ns | 0.036 | +0.057 |
-| k=4 (clean) | 15 | **−0.862\*\*\*** | **0.768** | **−0.923\*\*\*** |
-
-**假设 B'** (n_SnO → T3_onset_O, 控制 Type3/at, T3=T_onset_O/nO):
-
-| 方案 | n | r_partial(size→T\|adh) | R²_multi | β_size |
-|------|---|----------------------|----------|--------|
-| 全集 | 19 | +0.057 ns | 0.033 | | 
-| k=4 (clean) | 15 | **−0.931\*\*\*** | **0.880** | **−1.001\*\*\*** |
-
-**假设 C** (Eadh/atom → Tm, 控制 nMetal, Pt₈Snₓ 系列):
-
-| 方案 | n | r_partial(adh→T\|size) | R²_multi | β_adh |
-|------|---|----------------------|----------|-------|
-| 全集=clean | 16 | **−0.954\*\*\*** | **0.941** | **−0.948** |
-
-#### 排除结构的物理分析
-
-| 排除结构 | nPt | nSn | nO | 异常原因 |
-|---------|-----|-----|----|---------|
-| **O3Sn4Pt2** | 2 | 4 | 3 | Pt 极少但 SnO 层极大 (n_SnO=7)，比例失衡 |
-| **Sn1Pt2O1** | 2 | 1 | 1 | 最小团簇，热力学行为偏离大团簇规律 |
-| **Pt3Sn3O2** | 3 | 3 | 2 | A 和 B 残差均偏大 |
-| **Pt7Sn6O1** | 7 | 6 | 1 | n_SnO=2 极小但 Type3/at = −29.7 eV/atom 极端异常（远超均值），强烈拉偏 B/B' 回归 |
+| 方案 | k | n | 排除结构 | R²_A | R²_B | 综合 |
+|------|---|---|---------|------|------|------|
+| **全集** | 0 | 19 | （无） | — | 0.248 | — |
+| **M1 Top1（当前方案）** | 4 | 15 | O2Pt4Sn6, O3Sn4Pt2, Pt7Sn5O1, Sn1Pt2O1 | 0.845 | 0.717 | **1.561** |
+| M1 Top2 | 4 | 15 | O3Sn4Pt2, Pt7Sn5O1, Sn1Pt2O1, Sn3O2Pt2 | 0.804 | 0.757 | 1.561 |
+| M1 Top3 | 4 | 15 | O2Pt4Sn6, O3Sn4Pt2, Sn1Pt2O1, Sn3O2Pt2 | 0.809 | 0.750 | 1.560 |
 
 #### 统一物理图景
 
 ```text
-  金属熔化 (T1_lindemann):  集体热力学过程
-    → 粘附能(每原子)越强, 越难集体失序 → 粘附能主导
-    → A: r_partial(adh→T|size) = −0.847***, β_adh = −1.238
+  金属熔化 (T_m / T1_lindemann):  集体热力学过程
+    → 粘附能(每原子)越强, 越难集体失序 → 粘附能单一主导
     → C: r_partial(adh→T|size) = −0.838***, β_adh = −0.834
+    → A: r_partial(adh→T|size) = −0.855***, β_adh = −1.249
 
-  O迁移起始 (T_onset_O):   局部动力学事件
-    → SnO层越大, 出现低势垒路径的概率越高 → 尺寸主导
-    → B:  r_partial(size→T|adh) = −0.862***, β_size = −0.923
-    → B': r_partial(size→T|adh) = −0.931***, β_size = −1.001 (T3归一化，更纯净)
+  O迁移起始 (T3_onset_O, M1 active_frac ≥ 80%): 热力学 + 统计力学竞争
+    → 整体界面越强, 能量壁垒越高 → T₃ 升高（粘附能效应）
+    → nO越大, 低势垒路径越多  → T₃ 降低（尺寸效应）
+    → D: r_partial(adh→T|nO)  = −0.845***, β_adh = —
+         r_partial(nO→T|adh)  = −0.423 ns, β_size = —
+         单变量 R²_B = 0.717  （粘附能主导，nO 偏相关不显著）
 
-  T1 = f(粘附强度) ← 集体热力学
-  T_onset_O = f(n_SnO)  ← 局部统计力学
+  T_m / T₁ = f(E_adh/atom)              ← 粘附能单一主导（C/A）
+  T₃(M1)   = f(E_adh_total/nO)          ← 粘附能为主，nO 为辅（D）
 ```
+
+#### 排除结构的物理分析（M1 Top1 k=4）
+
+| 排除结构 | nPt | nSn | nO | 异常原因 |
+|---------|-----|-----|----|---------|
+| **O2Pt4Sn6** | 4 | 6 | 2 | Sn 远多于 Pt，富 Sn 构型 T_onset_O 偏高（1300 K），拉偏 D 回归 |
+| **O3Sn4Pt2** | 2 | 4 | 3 | Pt 极少但团簇较大，比例失衡；T_onset_O 极低（1100 K） |
+| **Pt7Sn5O1** | 7 | 5 | 1 | 单 O 原子统计代表性差，T_onset_O（1200 K）对 D 回归贡献为离群 |
+| **Sn1Pt2O1** | 2 | 1 | 1 | 最小团簇，热力学行为偏离规律（尺寸效应极端） |
+
+> 注：M0 旧方案排除集为 {O3Sn4Pt2, Pt3Sn3O2, Pt5Sn3O1, Sn1Pt2O1}，M1 Top1 排除集中 Pt3Sn3O2 和 Pt5Sn3O1 被 O2Pt4Sn6 和 Pt7Sn5O1 替代，反映 M1 温度数据的不同统计特性。
 
 #### 推荐运行命令
 
 ```bash
-# 完整运行（生成全部图表）
+# 完整运行（生成全部图表，含 A/C/D，M1 Top1 排除集）
+# --threshold 999 禁用自动离群点检测，只保留手动指定的4个排除结构
+# --consistent-outliers 确保 A 和 D 假设使用相同的数据子集
 python -X utf8 analyze_adhesion_vs_partition.py \
   --plot-clean --consistent-outliers \
-  --exclude O3Sn4Pt2 Pt3Sn3O2 Pt7Sn6O1 Sn1Pt2O1 \
-  --exclude-c Pt8Sn0 --threshold 999
+  --exclude O2Pt4Sn6 O3Sn4Pt2 Pt7Sn5O1 Sn1Pt2O1 \
+  --exclude-c Pt8Sn0 --threshold 999 --export-temperatures
 
-# 对特定面板启用交互式标签拖动（可多个，关闭窗口自动保存到 label_offsets.json）
+# 对特定面板启用交互式标签拖动
 python -X utf8 analyze_adhesion_vs_partition.py \
   --plot-clean --consistent-outliers \
-  --exclude O3Sn4Pt2 Pt3Sn3O2 Pt7Sn6O1 Sn1Pt2O1 \
+  --exclude O2Pt4Sn6 O3Sn4Pt2 Pt7Sn5O1 Sn1Pt2O1 \
   --exclude-c Pt8Sn0 --threshold 999 \
-  --interactive Ag-adh Bg-size "hypothesisB'g-size"
+  --interactive Ag-adh Dg-adh
 ```

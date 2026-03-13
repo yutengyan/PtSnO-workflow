@@ -71,6 +71,8 @@ import re
 
 BASE_DIR = Path(__file__).parent
 DATA_FILE = BASE_DIR / 'results' / 'step6_0_multi_system' / 'step6_0_all_systems_data.csv'
+# 与 step6_1_3_lindemann_only 保持一致的 Pt8Sn6 数据源
+DATA_FILE_50K = BASE_DIR / 'results' / 'step6_1_clustering' / 'Pt8Sn6_lindemann-threshold_n2_clustered_data.csv'
 MP_SUMMARY = BASE_DIR / 'results' / 'step5_1_melting_point' / 'melting_point_summary.csv'
 OUTPUT_DIR = BASE_DIR / 'results' / 'step5_1_1_1_multi_series'
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -209,7 +211,11 @@ def parse_args():
     
     # 字体大小精细调整
     p.add_argument('--tick-fontsize', type=int, default=None,
-                   help='坐标轴刻度字体大小（默认 28*fontscale）')
+                   help='坐标轴刻度字体大小（默认 28*fontscale），同时控制 x/y 刻度')
+    p.add_argument('--xtick-fontsize', type=int, default=None,
+                   help='x 轴结构名刻度字体大小（默认与 --tick-fontsize 一致）')
+    p.add_argument('--xtick-rotation', type=int, default=45,
+                   help='x 轴刻度标签旋转角度，0=正着显示，45=倾斜（默认 45）')
     p.add_argument('--label-fontsize', type=int, default=None,
                    help='坐标轴标签字体大小（默认 34*fontscale）')
     p.add_argument('--value-fontsize', type=int, default=None,
@@ -301,13 +307,15 @@ def interactive_mode(params, out_path):
         
         # 设置坐标轴
         ax_save_new.set_xticks(np.arange(len(params['cols'])))
-        ax_save_new.set_xticklabels(params['x_labels'], fontsize=params['TICK_FONTSIZE'], 
-                                     rotation=45, ha='right')
+        _rot = params['args'].xtick_rotation
+        _ha  = 'center' if _rot == 0 else 'right'
+        ax_save_new.set_xticklabels(params['x_labels'], fontsize=params['XTICK_FONTSIZE'],
+                                     rotation=_rot, ha=_ha)
         ax_save_new.set_yticks(np.arange(len(params['temps'])))
         ax_save_new.set_yticklabels([f'{int(t)}' for t in params['temps']], 
                                      fontsize=params['TICK_FONTSIZE'])
-        ax_save_new.set_xlabel('Pt$_x$Sn$_y$ (x,y)', fontsize=params['LABEL_FONTSIZE'], fontweight='bold')
-        ax_save_new.set_ylabel('Temperature (K)', fontsize=params['LABEL_FONTSIZE'], fontweight='bold')
+        ax_save_new.set_xlabel('Pt$_x$Sn$_y$ (x,y)', fontsize=params['LABEL_FONTSIZE'])
+        ax_save_new.set_ylabel('Temperature (K)', fontsize=params['LABEL_FONTSIZE'])
         
         # 添加数值标注
         if not params['args'].no_values:
@@ -327,9 +335,9 @@ def interactive_mode(params, out_path):
             end_col = params['all_boundaries'][seg_idx + 1]
             if end_col <= start_col:
                 continue
-            seg_data = params['data'][:, start_col:end_col]
+            seg_data = params['contour_data'][:, start_col:end_col]
             seg_cols = np.arange(start_col, end_col)
-            X_seg, Y_seg = np.meshgrid(seg_cols, np.arange(len(params['temps'])))
+            X_seg, Y_seg = np.meshgrid(seg_cols, params['contour_y'])
             ax_save_new.contour(X_seg, Y_seg, seg_data, levels=[threshold], 
                                colors=['black'], linewidths=2, linestyles='--')
         
@@ -343,6 +351,7 @@ def interactive_mode(params, out_path):
         cbar_save = fig_save.colorbar(im_save, ax=ax_save_new, fraction=0.046, 
                                        pad=current_params['cbar_pad'])
         cbar_save.set_label('Lindemann Index δ', fontsize=params['LABEL_FONTSIZE'])
+        cbar_save.set_ticks([0, 0.1, 0.2, 0.3])
         cbar_save.ax.tick_params(labelsize=params['CBAR_FONTSIZE'])
         cbar_save.ax.axhline(threshold, color='black', linestyle='--', linewidth=2)
         
@@ -406,10 +415,28 @@ def main():
         return
     
     df_all = pd.read_csv(DATA_FILE)
-    df_mp = pd.read_csv(MP_SUMMARY)
-    
-    # 统一的温度网格 (100K 间隔)
+    df_mp = pd.read_csv(MP_SUMMARY)    
+    # 检查是否有与 step6_1_3 一致的 Pt8Sn6 50K 聚类数据
+    df_pt8sn6_50k = None
+    if DATA_FILE_50K.exists():
+        print(f"  [OK] 发现 50K 步长数据：{DATA_FILE_50K.name}")
+        df_50k_raw = pd.read_csv(DATA_FILE_50K)
+        if not {'temp', 'delta'}.issubset(df_50k_raw.columns):
+            print("  [WARN] 50K 文件缺少 temp/delta 列，将回退到 100K 数据")
+            df_50k_raw = None
+        if df_50k_raw is not None:
+            # 该文件已是 Pt8Sn6 聚类结果，按 structure 字段再做一次稳健筛选
+            df_pt8sn6_50k = df_50k_raw[df_50k_raw['structure'].astype(str).str.lower() == 'pt8sn6'].copy()
+            if df_pt8sn6_50k.empty:
+                df_pt8sn6_50k = df_50k_raw.copy()
+            print(f"    - 筛选 Pt8Sn6 相关结构：{len(df_pt8sn6_50k)} 行数据")
+            print(f"    - 映射后列名：{df_pt8sn6_50k.columns.tolist()}")
+    else:
+        print(f"  [INFO] 未找到 50K 步长数据，将使用 100K 插值")    
+    # 热图显示使用 100K 网格（视觉更简洁）
     unified_temps = np.arange(200, 1200, 100)
+    # 等值线计算使用更细温度网格，保证 Pt8Sn6 的 0.1 交点不因显示网格粗化而偏移
+    contour_temps = np.arange(200, 1101, 10)
     
     fs = args.fontscale
     
@@ -459,8 +486,21 @@ def main():
     df_mean = df_sel.groupby(['structure', 'temp']).agg(delta_mean=('delta', 'mean')).reset_index()
     
     resampled_data = []
+    struct_curves = {}
     for struct in structures:
-        df_struct = df_mean[df_mean['structure'] == struct].sort_values('temp')
+        # Pt8Sn6 仅使用与 step6_1_3 一致的 50K 聚类数据
+        if df_pt8sn6_50k is not None and 'pt8sn6' in struct.lower():
+            df_struct = df_pt8sn6_50k[['temp', 'delta']].copy()
+            df_struct = df_struct.groupby('temp').agg(delta_mean=('delta', 'mean')).reset_index()
+            df_struct = df_struct.sort_values('temp')
+            print(f"  [INFO] {struct}: 使用 step6_1_3 同源 50K 聚类数据 ({len(df_struct)} 温度点)")
+        else:
+            # 其他结构使用 100K 数据插值
+            df_struct = df_mean[df_mean['structure'] == struct].sort_values('temp')
+
+        if len(df_struct) >= 2:
+            struct_curves[struct] = df_struct[['temp', 'delta_mean']].copy()
+        
         if len(df_struct) >= 2:
             f = interp1d(df_struct['temp'], df_struct['delta_mean'],
                         kind='linear', bounds_error=False, fill_value=np.nan)
@@ -480,28 +520,52 @@ def main():
     temps = pivot_table.index.values
     cols = pivot_table.columns.values
     data = pivot_table.values.astype(float)
+
+    # 构建用于等值线的细网格数据（x: 结构列；y: 细温度网格）
+    contour_data = np.full((len(contour_temps), len(cols)), np.nan)
+    for struct in structures:
+        if struct not in struct_curves:
+            continue
+        curve = struct_curves[struct]
+        if len(curve) < 2:
+            continue
+        f_curve = interp1d(curve['temp'], curve['delta_mean'],
+                           kind='linear', bounds_error=False, fill_value=np.nan)
+        x_idx = struct_to_idx[struct]
+        contour_data[:, x_idx] = f_curve(contour_temps)
+
+    y_step = float(temps[1] - temps[0]) if len(temps) >= 2 else 100.0
+    contour_y = (contour_temps - float(temps[0])) / y_step
     
     # 字体大小设置（与 5.1.2 一致的默认值）
     fs = args.fontscale
-    TICK_FONTSIZE = args.tick_fontsize if args.tick_fontsize else int(28 * fs)
-    LABEL_FONTSIZE = args.label_fontsize if args.label_fontsize else int(34 * fs)
-    VALUE_FONTSIZE = args.value_fontsize if args.value_fontsize else int(9 * fs)
-    CBAR_FONTSIZE = args.cbar_fontsize if args.cbar_fontsize else int(28 * fs)
-    
-    print(f"\n字体大小:")
-    print(f"  刻度: {TICK_FONTSIZE}pt, 标签: {LABEL_FONTSIZE}pt, 数值: {VALUE_FONTSIZE}pt, colorbar: {CBAR_FONTSIZE}pt")
-    
     # 解析图片尺寸
     try:
         fig_w, fig_h = map(float, args.figsize.lower().split('x'))
     except ValueError:
         print(f"[WARN] 无法解析图片尺寸 '{args.figsize}'，使用默认 16x7.5")
         fig_w, fig_h = 16, 7.5
-    
-    print(f"  图片尺寸: {fig_w}x{fig_h} 英寸")
+
+    # 字体缩放：若用户未手动指定任何字号，则按 figsize 相对基准 16x7.5
+    # 的几何平均比例自动缩放（保持字号与图面积视觉一致）
+    BASE_W, BASE_H = 16.0, 7.5
+    auto_scale = ((fig_w / BASE_W) * (fig_h / BASE_H)) ** 0.5  # 面积平方根比
+    fs_effective = fs * auto_scale  # 在 --fontscale 基础上叠加尺寸自动缩放
+
+    # 若用户手动指定了字号，则直接用；否则用自动缩放后的 fs_effective
+    TICK_FONTSIZE  = args.tick_fontsize  if args.tick_fontsize  else int(28 * fs_effective)
+    LABEL_FONTSIZE = args.label_fontsize if args.label_fontsize else int(34 * fs_effective)
+    VALUE_FONTSIZE = args.value_fontsize if args.value_fontsize else int(9  * fs_effective)
+    CBAR_FONTSIZE  = args.cbar_fontsize  if args.cbar_fontsize  else int(28 * fs_effective)
+    # x 轴结构名刻度：默认与 TICK_FONTSIZE 一致，可单独用 --xtick-fontsize 覆盖
+    XTICK_FONTSIZE = args.xtick_fontsize if args.xtick_fontsize else TICK_FONTSIZE
+
+    print(f"\n字体大小:")
+    print(f"  y刻度: {TICK_FONTSIZE}pt, x刻度: {XTICK_FONTSIZE}pt, 标签: {LABEL_FONTSIZE}pt, 数值: {VALUE_FONTSIZE}pt, colorbar: {CBAR_FONTSIZE}pt")
+    print(f"  (自动缩放比: {auto_scale:.3f}, figsize: {fig_w}x{fig_h})")
     print(f"  colorbar 间距: {args.cbar_pad}")
-    
-    # 创建图（固定尺寸 16x7.5）
+
+    # 创建图
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     
     # 绘制热图
@@ -511,15 +575,17 @@ def main():
     # x 轴标签 - 使用与 5.1.2 一致的 (x,y) 格式
     x_labels = [format_structure_label(s) for s in structures]
     ax.set_xticks(np.arange(len(cols)))
-    ax.set_xticklabels(x_labels, fontsize=TICK_FONTSIZE, rotation=45, ha='right')
+    xtick_rot = args.xtick_rotation
+    xtick_ha = 'center' if xtick_rot == 0 else 'right'
+    ax.set_xticklabels(x_labels, fontsize=XTICK_FONTSIZE, rotation=xtick_rot, ha=xtick_ha)
     
     # y 轴（去掉K单位，与 5.1.2 一致）
     ax.set_yticks(np.arange(len(temps)))
     ax.set_yticklabels([f'{int(t)}' for t in temps], fontsize=TICK_FONTSIZE)
     
     # 轴标签
-    ax.set_xlabel('Pt$_x$Sn$_y$ (x,y)', fontsize=LABEL_FONTSIZE, fontweight='bold')
-    ax.set_ylabel('Temperature (K)', fontsize=LABEL_FONTSIZE, fontweight='bold')
+    ax.set_xlabel('Pt$_x$Sn$_y$ (x,y)', fontsize=LABEL_FONTSIZE)
+    ax.set_ylabel('Temperature (K)', fontsize=LABEL_FONTSIZE)
     
     if not args.no_title:
         title_parts = [SERIES_CONFIG[s]['name'] for s in target_series if s in SERIES_CONFIG]
@@ -554,11 +620,11 @@ def main():
         if end_col <= start_col:
             continue
         
-        # 提取该系列的数据
-        seg_data = data[:, start_col:end_col]
+        # 提取该系列用于等值线的细网格数据
+        seg_data = contour_data[:, start_col:end_col]
         seg_cols = np.arange(start_col, end_col)
         
-        X_seg, Y_seg = np.meshgrid(seg_cols, np.arange(len(temps)))
+        X_seg, Y_seg = np.meshgrid(seg_cols, contour_y)
         
         # 绘制该段的等高线
         ax.contour(X_seg, Y_seg, seg_data, levels=[threshold], 
@@ -574,6 +640,7 @@ def main():
     # Colorbar - 靠近热图
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=args.cbar_pad)
     cbar.set_label('Lindemann Index δ', fontsize=LABEL_FONTSIZE)
+    cbar.set_ticks([0, 0.1, 0.2, 0.3])
     cbar.ax.tick_params(labelsize=CBAR_FONTSIZE)
     cbar.ax.axhline(threshold, color='black', linestyle='--', linewidth=2)
     
@@ -588,7 +655,9 @@ def main():
         'threshold': threshold, 'args': args,
         'TICK_FONTSIZE': TICK_FONTSIZE, 'LABEL_FONTSIZE': LABEL_FONTSIZE,
         'VALUE_FONTSIZE': VALUE_FONTSIZE, 'CBAR_FONTSIZE': CBAR_FONTSIZE,
+        'XTICK_FONTSIZE': XTICK_FONTSIZE,
         'target_series': target_series, 'all_boundaries': all_boundaries,
+        'contour_data': contour_data, 'contour_y': contour_y,
         'fig_w': fig_w, 'fig_h': fig_h
     }
     

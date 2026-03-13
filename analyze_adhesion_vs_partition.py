@@ -297,7 +297,7 @@ PT8SNX_DATA = {
     'Pt8Sn3':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 3, 'Eadh': -0.201466091,  'Tm': 574.0},
     'Pt8Sn4':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 4, 'Eadh': -0.136585333,  'Tm': 566.3},
     'Pt8Sn5':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 5, 'Eadh': -0.114243077,  'Tm': 575.5},
-    'Pt8Sn6':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 6, 'Eadh': -0.135212286,  'Tm': 528.5},
+    'Pt8Sn6':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 6, 'Eadh': -0.135212286,  'Tm': 560.2367},
     'Pt8Sn7':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 7, 'Eadh': -0.152302333,  'Tm': 577.1},
     'Pt8Sn8':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 8, 'Eadh': -0.08049725,   'Tm': 477.0},
     'Pt8Sn9':    {'series': 'Pt8Snx',   'nPt': 8, 'nSn': 9, 'Eadh': -0.040358529,  'Tm': 504.5},
@@ -1037,8 +1037,8 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
         print(f"  │ 物理预期: {a['physical']}")
         print(f"  │ 离群阈值: {args.threshold}σ{mode_tag}")
         print(f"  │")
-        print(f"  │ 简单相关(全{len(v)}点):       r = {r_simple:+.3f}, p = {p_simple:.3e} {_sig_label(p_simple)}")
-        print(f"  │ 偏相关(全{len(v)}点,控制{a['size_col']}): r = {r_partial:+.3f}, p = {p_partial:.3e} {_sig_label(p_partial)}")
+        print(f"  │ 简单相关(全={len(v)}点, 已含手动排除):       r = {r_simple:+.3f}, p = {p_simple:.3e} {_sig_label(p_simple)}")
+        print(f"  │ 偏相关(全={len(v)}点, 控制{a['size_col']}): r = {r_partial:+.3f}, p = {p_partial:.3e} {_sig_label(p_partial)}")
         
         # 离群点详细信息
         if outliers:
@@ -1055,7 +1055,7 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
         else:
             print(f"  │ 离群点: 无 (阈值 {args.threshold}σ)")
         
-        print(f"  │ clean({len(v_clean)}点)偏相关:  r = {r_clean:+.3f}, p = {p_clean:.3e} {_sig_label(p_clean)}")
+        print(f"  │ clean={len(v_clean)}点 (在全基础上再去自动离群) 偏相关:  r = {r_clean:+.3f}, p = {p_clean:.3e} {_sig_label(p_clean)}")
         print(f"  │")
         # ---- 单变量 R²: adh-only 和 size-only ----
         from sklearn.linear_model import LinearRegression as _LR
@@ -1144,7 +1144,8 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
     print("  " + "=" * 120)
     print("  偏相关分析总结")
     print("  " + "=" * 120)
-    print(f"  {'关系':<28} │ {'简单r(全)':>10} │ {'偏r(全)':>10} │ {'偏r(clean)':>10} │ {'R²':>5} │ {'r_adh':>7} │ {'r_size':>7} │ {'β_adh':>6} │ {'β_size':>6} │ 结论")
+    print("  口径说明: 全 = 当前可用全集(已包含手动排除如 --exclude/--exclude-c); clean = 全基础上再做自动离群清洗")
+    print(f"  {'关系':<28} │ {'简单r(全,手动后)':>14} │ {'偏r(全,手动后)':>14} │ {'偏r(clean,再去离群)':>18} │ {'R²':>5} │ {'r_adh':>7} │ {'r_size':>7} │ {'β_adh':>6} │ {'β_size':>6} │ 结论")
     print(f"  {'─' * 120}")
     for res in results_partial:
         s1 = f"{res['r_simple']:+.3f}{_sig_label(res['p_simple']):>3}"
