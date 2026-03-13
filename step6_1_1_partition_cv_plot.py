@@ -185,6 +185,50 @@ def parse_exclude_points(exclude_args):
     return exclude_dict
 
 
+def parse_override_energy(override_args):
+    """
+    解析能量覆盖参数
+
+    参数:
+        override_args: list of str
+            支持以下格式：
+            - "400K:-95384.715"        仅均值，std=0
+            - "400K:-95384.715±0.20"   均值 + std（用±分隔）
+            - "400K:-95384.715+/-0.20" 均值 + std（用+/-分隔）
+
+    返回:
+        dict: {temp_K(int): (mean_eV(float), std_eV(float))}
+              例如 {400: (-95384.715, 0.20), 750: (-95370.05, 0.0)}
+    """
+    override_dict = {}
+    if not override_args:
+        return override_dict
+
+    for arg in override_args:
+        try:
+            # 分离温度和能量部分（第一个冒号之后）
+            colon_idx = arg.index(':')
+            temp_str = arg[:colon_idx]
+            energy_str = arg[colon_idx + 1:]
+            temp = int(temp_str.replace('K', '').replace('k', ''))
+
+            # 解析均值 ± std
+            std_val = 0.0
+            for sep in ['±', '+/-']:
+                if sep in energy_str:
+                    parts = energy_str.split(sep, 1)
+                    energy_str = parts[0]
+                    std_val = float(parts[1])
+                    break
+            energy = float(energy_str)
+            override_dict[temp] = (energy, std_val)
+        except Exception as e:
+            print(f"  ⚠️ 警告: 无法解析能量覆盖参数 '{arg}': {e}")
+            print(f"       正确格式: '400K:-95384.715' 或 '400K:-95384.715±0.20'")
+
+    return override_dict
+
+
 def filter_data_by_exclusion(df, exclude_dict, sort_by='delta'):
     """
     根据排除规则过滤数据
@@ -479,7 +523,7 @@ def calculate_transition_cv(df, temp_to_partition, phase_fits, temps_unique, E_c
     return result
 
 
-def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None, custom_partitions=None, peak_method='fit', remove_outliers=False, outlier_iqr=1.5, scatter_fit=False, use_lines=False):
+def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=300, tick_params=None, custom_partitions=None, peak_method='fit', remove_outliers=False, outlier_iqr=1.5, scatter_fit=False, use_lines=False, override_energy=None, export_energy=False, hide_override_marker=False, font_scale=1.0):
     """
     绘制分区热容拟合图（论文出图专用）
     
@@ -510,8 +554,16 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     
     remove_outliers: 是否剔除离群点
     outlier_iqr: IQR倍数阈值，默认1.5
+    override_energy: dict {temp_K: energy_eV}，指定温度使用外部能量值（绝对值，eV）
+        例如: {400: -95384.715, 750: -95370.286}
+        覆盖后的温度点会在图中以 ★ 标记标出
+    export_energy: bool，是否将每个温度的能量数据导出到 CSV
     """
     
+    # 字体大小（支持 font_scale 缩放）
+    _font_tick  = int(round(FONT_TICK  * font_scale))
+    _font_label = int(round(FONT_LABEL * font_scale))
+
     # 默认刻度参数
     if tick_params is None:
         tick_params = {}
@@ -541,7 +593,7 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         support_fit = load_support_energy_data()
         if support_fit is not None:
             slope_support, intercept_support, R2_support = support_fit
-            print(f"  [载体数据] Cv_support={slope_support*1000:.4f} meV/K, R²={R2_support:.6f}")
+            print(f"  [载体数据] Cv_support={slope_support*1000:.4f} meV/K, R2={R2_support:.6f}")
         else:
             slope_support = CV_SUPPORT / 1000  # meV/K -> eV/K
             T_min = df['temp'].min()
@@ -676,11 +728,59 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
     temps_unique = np.array(temps_unique)
     E_cluster_mean = np.array(E_cluster_mean)
     E_cluster_std = np.array(E_cluster_std)
-    
+
+    # ========== 能量覆盖（--override-energy）==========
+    # 记录哪些温度被覆盖，用于图中标注
+    override_mask = np.zeros(len(temps_unique), dtype=bool)
+    if override_energy:
+        print(f"\n  [能量覆盖] 使用外部能量替换以下温度的计算均值:")
+        for i, temp in enumerate(temps_unique):
+            temp_int = int(round(temp))
+            if temp_int in override_energy:
+                raw_energy_val, raw_std_val = override_energy[temp_int]
+                # 转换为 cluster 能量（减去载体能量基线）
+                if is_air_system:
+                    cluster_energy = raw_energy_val
+                    cluster_std = raw_std_val
+                else:
+                    cluster_energy = raw_energy_val - (slope_support * temp + intercept_support)
+                    cluster_std = raw_std_val  # std 不受线性基线影响（平移不变）
+                old_val = E_cluster_mean[i]
+                E_cluster_mean[i] = cluster_energy
+                E_cluster_std[i] = cluster_std   # 保留外部提供的 std（0 表示无误差棒）
+                override_mask[i] = True
+                std_str = f"  std={raw_std_val:.4f} eV" if raw_std_val > 0 else ""
+                print(f"    T={temp_int}K: CSV均值={old_val:.4f} eV → 覆盖值={cluster_energy:.4f} eV "
+                      f"(原始绝对能量={raw_energy_val:.4f} eV{std_str})")
+
     # 计算相对能量（相对于最低温度）
     E_cluster_ref = E_cluster_mean.min()
     E_cluster_mean_rel = E_cluster_mean - E_cluster_ref
-    
+
+    # ========== 导出能量表（--export-energy）==========
+    if export_energy:
+        # 用载体基线计算绝对能量（方便对照）
+        if is_air_system:
+            E_abs = E_cluster_mean.copy()
+        else:
+            E_abs = E_cluster_mean + (slope_support * temps_unique + intercept_support)
+        # 相对于固相基线的偏差（用最低100K的线性拟合估算基线）
+        export_rows = []
+        for i, temp in enumerate(temps_unique):
+            export_rows.append({
+                '温度(K)': int(round(temp)),
+                '绝对能量_eV': E_abs[i],
+                'Ecluster_eV': E_cluster_mean[i],
+                'Ecluster_std_eV': E_cluster_std[i],
+                'Ecluster_rel_eV': E_cluster_mean_rel[i],
+                '是否被覆盖': '★' if override_mask[i] else '',
+            })
+        df_export = pd.DataFrame(export_rows)
+        export_path = Path(output_dir) / f'{structure_name}_energy_table.csv'
+        df_export.to_csv(export_path, index=False)
+        print(f"\n  [导出能量表] 已保存: {export_path}")
+        print(df_export.to_string(index=False))
+
     # 为散点模式添加energy_cluster_rel列到df
     # 计算每行的energy_cluster相对值
     if is_air_system:
@@ -808,7 +908,7 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
                 'E_std': E_phase_std
             }
             
-            print(f"  {phase}: Cv={Cv_ph:.4f}±{Cv_ph_err:.4f} meV/K, R²={R2_ph:.4f}, "
+            print(f"  {phase}: Cv={Cv_ph:.4f}+/-{Cv_ph_err:.4f} meV/K, R2={R2_ph:.4f}, "
                   f"n={len(T_phase)}, T={T_phase.min():.0f}-{T_phase.max():.0f}K")
     
     # ========== 5. 绘制简洁的双Y轴图 ==========
@@ -830,6 +930,11 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
                      fmt='o', markersize=10, color='black', 
                      ecolor='gray', elinewidth=2, capsize=4, capthick=2,
                      zorder=5, label='Data')
+        # 标记覆盖点：用★叠加显示
+        if override_mask.any() and not hide_override_marker:
+            ax1.scatter(temps_unique[override_mask], E_cluster_mean_rel[override_mask],
+                        marker='*', s=240, color='red', zorder=7,
+                        label='Overridden energy')
     
     # 绘制拟合线或连接线（黑色）
     phases_sorted = sorted(phase_fits.keys())
@@ -877,9 +982,9 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
             ax1.plot([T_current_end, T_next_start], [E_current_end, E_next_start], 
                      '-', color='black', linewidth=2.5, zorder=4)
     
-    ax1.set_xlabel('Temperature (K)', fontsize=FONT_LABEL)
-    ax1.set_ylabel('Total Energy (eV)', fontsize=FONT_LABEL)
-    ax1.tick_params(axis='both', labelsize=FONT_TICK)
+    ax1.set_xlabel('Temperature (K)', fontsize=_font_label)
+    ax1.set_ylabel('Total Energy (eV)', fontsize=_font_label)
+    ax1.tick_params(axis='both', labelsize=_font_tick)
     
     # 设置Y轴刻度
     E_ylim = ax1.get_ylim()
@@ -1070,8 +1175,8 @@ def plot_partition_cv(df, structure_name, output_dir, output_format='png', dpi=3
         Cv_curve = np.array([Cv_single, Cv_single])
         ax2.plot(T_cv, Cv_curve, 'r-', linewidth=2.5, zorder=3)
     
-    ax2.set_ylabel(r'$C_v$ (meV/K)', fontsize=FONT_LABEL, color='red')
-    ax2.tick_params(axis='y', labelcolor='red', labelsize=FONT_TICK, color='red')
+    ax2.set_ylabel(r'$C_v$ (meV/K)', fontsize=_font_label, color='red')
+    ax2.tick_params(axis='y', labelcolor='red', labelsize=_font_tick, color='red')
     ax2.spines['right'].set_color('red')
     
     # 设置Y轴范围（考虑所有分区的热容和峰值）
@@ -1323,7 +1428,25 @@ Lindemann阈值自动分区（新功能）:
                         help='限制温度范围，格式: MIN-MAX\n'
                              '例如: --temp-range 200-1100 只处理200-1100K的数据\n'
                              '注意: 此参数会在数据读取后立即过滤，影响所有后续分析')
-    
+    parser.add_argument('--override-energy', nargs='+', metavar='TEMPK:ENERGY_EV',
+                    help='覆盖指定温度的平均能量（绝对值，eV），支持附带误差棒，格式: "400K:-95384.715" 或 "400K:-95384.715±0.20"\n'
+                        '可同时指定多个温度: "400K:-95384.715±0.13" "750K:-95370.286"\n'
+                        '用于将外部/新实验能量注入到 Cv 计算中，替换 CSV 里的计算均值\n'
+                        '覆盖的温度点会在图中以不同标记（★）标出，且误差棒会被保留（若提供）\n'
+                        '示例: --override-energy "400K:-95384.715±0.13" "750K:-95370.286"')
+    parser.add_argument('--hide-override-marker', action='store_true',
+                        help='隐藏图中覆盖能量点（override-energy）的红色★标记\n'
+                             '数据值仍然生效，仅不在图上额外绘制红色星形标记')
+    parser.add_argument('--font-scale', type=float, default=1.0,
+                        metavar='SCALE',
+                        help='字体整体缩放比例（默认: 1.0）\n'
+                             '小于1时缩小字体，例如 --font-scale 0.8 使字体缩小为原来的80%%\n'
+                             '影响坐标轴标签（默认34pt）和刻度数字（默认28pt）')
+    parser.add_argument('--export-energy', action='store_true',
+                        help='将每个温度的平均能量（含覆盖后的值）导出到 CSV 文件\n'
+                             '文件保存在 --output-dir 下，名为 {structure}_energy_table.csv\n'
+                             '包含: 温度、平均能量、vs基线偏差、是否被覆盖等信息')
+
     return parser.parse_args()
 
 
@@ -1394,6 +1517,21 @@ def main():
         print(f"\n  手动排除点配置:")
         print(f"    排序依据: {args.exclude_sort_by}")
         print(f"    排除规则: {exclude_dict}")
+
+    # 解析能量覆盖参数
+    override_energy = parse_override_energy(args.override_energy)
+    if override_energy:
+        print(f"\n  能量覆盖配置:")
+        for t, e in sorted(override_energy.items()):
+            # e may be (mean, std) or a single float
+            if isinstance(e, tuple) or isinstance(e, list):
+                mean_e, std_e = e
+                if std_e and std_e > 0:
+                    print(f"    {t}K → {mean_e:.6f} eV ±{std_e:.6f} eV")
+                else:
+                    print(f"    {t}K → {mean_e:.6f} eV")
+            else:
+                print(f"    {t}K → {float(e):.6f} eV")
     
     # 列出可用结构
     if args.list:
@@ -1508,7 +1646,11 @@ def main():
         result = plot_partition_cv(df, found_name, output_dir, 
                                    args.format, args.dpi, tick_params, custom_partitions,
                                    args.peak_method, remove_outliers_param, args.outlier_iqr,
-                                   args.scatter_fit, args.use_lines)
+                                   args.scatter_fit, args.use_lines,
+                                   override_energy=override_energy,
+                                   export_energy=args.export_energy,
+                                   hide_override_marker=args.hide_override_marker,
+                                   font_scale=args.font_scale)
         
         if result:
             results.append(result)

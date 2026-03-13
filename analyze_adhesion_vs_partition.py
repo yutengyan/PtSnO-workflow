@@ -101,7 +101,7 @@ parser.add_argument('--offsets-file', default='label_offsets.json',
 parser.add_argument('--export-temperatures', action='store_true',
                     help='导出所有结构的温度汇总表到 T1_T2_summary.csv\n'
                          '  T1 = T1_lindemann (Lindemann δ=0.1 阈值温度)\n'
-                         '  T2_B = T_onset_O (假说B用, 阈值 2.0/ps)\n'
+                         '  T2_B = T_onset_O (假说B用, 阈值 2.5/ps, 统一新阈值)\n'
                          '  T2_Bprime = T3_onset_O=T_onset_O_perO (假说B\'用, 阈值 2.5/nO /ps)')
 args = parser.parse_args()
 
@@ -130,28 +130,29 @@ PARTITION_DATA = {
     # T1_kmeans: kmeans聚类确定的固相边界
     # T1_lindemann: Lindemann指数首次超过δ=0.1的温度
     # T2_kmeans: kmeans聚类确定的液相边界
-    # T_onset_O:      氧迁移起始温度 (avg_freq >= 2.0 /ps 的最低温度, 来自AIMD轨迹)
-    # T_onset_O_perO: 每O原子归一化迁移温度 (avg_freq >= 2.5/nO /ps, 由process_melting_summary.py计算)
-    #                 nO=1 结构与 T_onset_O 相同; nO>1 结构通常更低 (-100~-200K)
-    "Sn1Pt2O1": {"T1_kmeans": 750, "T2_kmeans": 1450, "T1_lindemann": 1719.47, "T_onset_O": 1200, "T_onset_O_perO": 1200},
-    "Pt2Sn2O1": {"T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann": 1492.00, "T_onset_O": 1700, "T_onset_O_perO": 1700},
-    "Pt3Sn2O1": {"T1_kmeans": 750, "T2_kmeans": 1200, "T1_lindemann": 1063.90, "T_onset_O": 1500, "T_onset_O_perO": 1600},
-    "Sn3O2Pt2": {"T1_kmeans": 750, "T2_kmeans": 1400, "T1_lindemann": 1230.55, "T_onset_O": 1500, "T_onset_O_perO": 1500},
-    "O3Sn4Pt2": {"T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann":  861.84, "T_onset_O": 1500, "T_onset_O_perO": 1300},
-    "Pt3Sn3O2": {"T1_kmeans": 750, "T2_kmeans": 1300, "T1_lindemann":  849.52, "T_onset_O": 1600, "T_onset_O_perO": 1600},
-    "Sn3Pt4O1": {"T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann":  617.20, "T_onset_O": 1600, "T_onset_O_perO": 1700},
-    "Pt5Sn3O1": {"T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann":  585.42, "T_onset_O": 1500, "T_onset_O_perO": 1600},
-    "Pt5Sn4O1": {"T1_kmeans": 750, "T2_kmeans": 1250, "T1_lindemann":  727.74, "T_onset_O": 1600, "T_onset_O_perO": 1600},
+    # T_onset_O / T_onset_O_perO:
+    #   M1 active_frac >= 80% (at least 4/5 independent runs show O migration, freq>0)
+    #   由 m1_onset_inspector.py --af 0.80 计算，2026-03-09
+    #   R²_B基线=0.248, R²_B(k=4)=0.856 (排除 O2Pt4Sn6, Pt7Sn5O1, Sn1Pt2O1, Sn3O2Pt2)
+    "Sn1Pt2O1": {"T1_kmeans": 750, "T2_kmeans": 1450, "T1_lindemann": 1719.47, "T_onset_O": 1000, "T_onset_O_perO": 1000},
+    "Pt2Sn2O1": {"T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann": 1492.00, "T_onset_O": 1500, "T_onset_O_perO": 1500},
+    "Pt3Sn2O1": {"T1_kmeans": 750, "T2_kmeans": 1200, "T1_lindemann": 1063.90, "T_onset_O": 1500, "T_onset_O_perO": 1500},
+    "Sn3O2Pt2": {"T1_kmeans": 750, "T2_kmeans": 1400, "T1_lindemann": 1230.55, "T_onset_O": 1400, "T_onset_O_perO": 1400},
+    "O3Sn4Pt2": {"T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann":  861.84, "T_onset_O": 1100, "T_onset_O_perO": 1100},
+    "Pt3Sn3O2": {"T1_kmeans": 750, "T2_kmeans": 1300, "T1_lindemann":  849.52, "T_onset_O": 1200, "T_onset_O_perO": 1200},
+    "Sn3Pt4O1": {"T1_kmeans": 700, "T2_kmeans": 1250, "T1_lindemann":  617.20, "T_onset_O": 1400, "T_onset_O_perO": 1400},
+    "Pt5Sn3O1": {"T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann":  585.42, "T_onset_O": 1200, "T_onset_O_perO": 1200},
+    "Pt5Sn4O1": {"T1_kmeans": 750, "T2_kmeans": 1250, "T1_lindemann":  727.74, "T_onset_O": 1400, "T_onset_O_perO": 1400},
     "O2Pt4Sn6": {"T1_kmeans": 750, "T2_kmeans": 1300, "T1_lindemann":  490.69, "T_onset_O": 1300, "T_onset_O_perO": 1300},
-    "Sn6Pt5O2": {"T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann":  537.64, "T_onset_O": 1400, "T_onset_O_perO": 1300},
-    "Sn7Pt4O3": {"T1_kmeans": 800, "T2_kmeans": 1300, "T1_lindemann":  623.71, "T_onset_O": 1200, "T_onset_O_perO": 1100},
-    "O3Pt5Sn7": {"T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann":  619.82, "T_onset_O": 1300, "T_onset_O_perO": 1100},
-    "Pt7Sn5O1": {"T1_kmeans": 650, "T2_kmeans": 1150, "T1_lindemann":  542.90, "T_onset_O": 1600, "T_onset_O_perO": 1600},
-    "Pt7Sn6O1": {"T1_kmeans": 600, "T2_kmeans": 1150, "T1_lindemann":  558.02, "T_onset_O": 1500, "T_onset_O_perO": 1600},
-    "Pt6Sn5O2": {"T1_kmeans": 550, "T2_kmeans": 750, "T1_lindemann":  739.98, "T_onset_O": 1400, "T_onset_O_perO": 1300},   # g-948-Pt6Sn5O2
-    "Pt6Sn6O3": {"T1_kmeans": 450, "T2_kmeans": 650, "T1_lindemann":  649.13, "T_onset_O": 1300, "T_onset_O_perO": 1200},   # g-948-Pt6Sn6O3
-    "Sn7Pt6O4": {"T1_kmeans": 400, "T2_kmeans": 700, "T1_lindemann":  710.76, "T_onset_O": 1300, "T_onset_O_perO": 1200},   # g-1051-Sn7Pt6O4
-    "O2Pt7Sn7": {"T1_kmeans": 750, "T2_kmeans": 1275, "T1_lindemann":  562.89, "T_onset_O": 1350, "T_onset_O_perO": 1300},
+    "Sn6Pt5O2": {"T1_kmeans": 750, "T2_kmeans": 1350, "T1_lindemann":  537.64, "T_onset_O": 1100, "T_onset_O_perO": 1100},
+    "Sn7Pt4O3": {"T1_kmeans": 800, "T2_kmeans": 1300, "T1_lindemann":  623.71, "T_onset_O": 1000, "T_onset_O_perO": 1000},
+    "O3Pt5Sn7": {"T1_kmeans": 700, "T2_kmeans": 1200, "T1_lindemann":  619.82, "T_onset_O": 1200, "T_onset_O_perO": 1200},
+    "Pt7Sn5O1": {"T1_kmeans": 650, "T2_kmeans": 1150, "T1_lindemann":  542.90, "T_onset_O": 1200, "T_onset_O_perO": 1200},
+    "Pt7Sn6O1": {"T1_kmeans": 600, "T2_kmeans": 1150, "T1_lindemann":  558.02, "T_onset_O": 1300, "T_onset_O_perO": 1300},
+    "Pt6Sn5O2": {"T1_kmeans": 550, "T2_kmeans": 750, "T1_lindemann":  739.98, "T_onset_O": 1100, "T_onset_O_perO": 1100},   # g-948-Pt6Sn5O2
+    "Pt6Sn6O3": {"T1_kmeans": 450, "T2_kmeans": 650, "T1_lindemann":  649.13, "T_onset_O": 1100, "T_onset_O_perO": 1100},   # g-948-Pt6Sn6O3
+    "Sn7Pt6O4": {"T1_kmeans": 400, "T2_kmeans": 700, "T1_lindemann":  710.76, "T_onset_O": 1100, "T_onset_O_perO": 1100},   # g-1051-Sn7Pt6O4
+    "O2Pt7Sn7": {"T1_kmeans": 750, "T2_kmeans": 1275, "T1_lindemann":  562.89, "T_onset_O": 1250, "T_onset_O_perO": 1250},
 }
 
 # 粘附能数据 (单位: eV)
@@ -914,6 +915,10 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
             'temp_name': 'T3_onset_O (÷nO)',
             'physical': "整体PtSnO/Al2O3粘附能(每O归一化)→T3: 含O的整体界面结合强度决定O迁移",
             'color': 'chocolate', 'color_clean': 'saddlebrown',
+            'axis_adh_label': r'$E_{adh}^2$ (eV/atom)',
+            'axis_adh_res_label': r'$E_{adh}^2$ residual (eV/atom)',
+            'axis_temp_label': r'$T_2$ (K)',
+            'axis_temp_res_label': r'$T_2$ residual (K)',
         },
         {
             'label': '预期C',
@@ -922,7 +927,7 @@ def analyze_partial_correlation(df, output_dir="results/adhesion_analysis"):
             'adh_name': 'Eadh/atom (Pt₈Snₓ)',
             'temp_name': 'T_m',
             'physical': 'Pt8Snx系列: 粘附能→熔点 (无O, 纯尺寸/组分效应)',
-            'color': '#1f77b4', 'color_clean': '#d62728',
+            'color': '#1f77b4', 'color_clean': '#1f77b4',
             'df_override': df_c,      # 使用独立数据集
             'consistent_group': False,  # 不参与 A∪B 并集
         },
@@ -1640,7 +1645,9 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
     # 格式: --clean-xticks Aa:-0.6,-0.4,-0.2,0  Bc:100,200,300
     # 映射到 tick_map[('A','a','x')] = [-0.6, -0.4, -0.2, 0.0]
     def _parse_tick_specs(spec_list):
-        """Parse 'Aa:v1,v2,...' specs into dict keyed by (hyp, panel)."""
+        """Parse 'Aa:v1,v2,...' specs into dict keyed by ('hypothesisX', panel_letter).
+        支持短格式 'Cg' 和扩展格式 'Cg-adh'/'Cg-size'（g 面板两子图共用同一刻度）。
+        """
         result = {}
         if spec_list is None:
             return result
@@ -1649,12 +1656,17 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                 print(f"  [WARN] 无效刻度格式 (缺少':'): {spec}")
                 continue
             key, vals = spec.split(':', 1)
-            if len(key) != 2 or key[0] not in 'ABC' or key[1] not in 'abcdefg':
-                print(f"  [WARN] 无效面板标识 '{key}' (应为 Aa-Ag/Ba-Bg/...)")
+            # 兼容扩展格式: Cg-adh / Cg-size → 取前两个字符
+            key_base = key.split('-')[0]  # 去掉 -adh / -size 后缀
+            if len(key_base) != 2 or key_base[0] not in 'ABC' or key_base[1] not in 'abcdefg':
+                print(f"  [WARN] 无效面板标识 '{key}' (应为 Aa-Ag/Ba-Bg/.../Cg-adh)")
                 continue
             try:
                 tick_vals = [float(v) for v in vals.split(',')]
-                result[(key[0], key[1])] = tick_vals
+                # 转换为长格式 key，与绘图代码中 xt_map.get((hk, panel_letter)) 匹配
+                hyp_long = f'hypothesis{key_base[0]}'   # 'C' → 'hypothesisC'
+                panel_letter = key_base[1]               # 'g'
+                result[(hyp_long, panel_letter)] = tick_vals
             except ValueError:
                 print(f"  [WARN] 无法解析刻度值: {vals}")
         return result
@@ -1981,6 +1993,9 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
         elif 'Type3' in a['adh_col']:
             adh_label = r'$E_{adh}^2$ (eV/atom)'
             adh_res_label = r'$E_{adh}^2$ residual (eV/atom)'
+        elif 'Type4' in a['adh_col']:
+            adh_label = r'$E_{adh}^4$ (eV/O)'
+            adh_res_label = r'$E_{adh}^4$ residual (eV/O)'
         else:
             # 预期C: 通用 Eadh/atom
             adh_label = r'$E_{adh}$ (eV/atom)'
@@ -1995,13 +2010,22 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                 # C组: Eadh → Tm
                 temp_label = r'$T_m$ (K)'
                 temp_res_label = r'$T_m$ residual (K)'
+        elif 'T3' in a['temp_col']:
+            # D组: Type4 → T3 (T_onset_O, 整体界面)
+            temp_label = r'$T_3$ (K)'
+            temp_res_label = r'$T_3$ residual (K)'
         else:
             # B组: Type3 → T2 (T_onset_O)
             temp_label = r'$T_2$ (K)'
             temp_res_label = r'$T_2$ residual (K)'
 
-        htag = a['label'].replace('预期', 'hypothesis')
+        # 用 analyses 配置里的自定义标签覆盖自动推断（优先级最高）
+        adh_label      = a.get('axis_adh_label',      adh_label)
+        adh_res_label  = a.get('axis_adh_res_label',  adh_res_label)
+        temp_label     = a.get('axis_temp_label',     temp_label)
+        temp_res_label = a.get('axis_temp_res_label', temp_res_label)
 
+        htag = a['label'].replace('预期', 'hypothesis')
         # ============================================================
         # (a) Simple correlation — clean data only
         # ============================================================
@@ -2531,14 +2555,18 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                              edgecolors='black', linewidths=2, alpha=0.85, zorder=5)
                 anns_u, names_u = _annotate_clean(ax_u, v_clean, xcol, ycol,
                                                   panel_key=f'{hk}g_{panel_suffix}')
-                # 散点说明图例项: Pt_xSn_yO_z  (始终显示)
+                # 散点说明图例项: 根据数据集是否含 O 自动选择化学式
                 import matplotlib.lines as _mlines
+                _has_O = ('nO' in v_clean.columns and v_clean['nO'].notna().any()
+                          and (v_clean['nO'] > 0).any())
+                _dot_label = (r'$\mathrm{Pt}_x\mathrm{Sn}_y\mathrm{O}_z$' if _has_O
+                              else r'$\mathrm{Pt}_x\mathrm{Sn}_y$')
                 _dot_handle = _mlines.Line2D(
                     [], [], linestyle='none',
                     marker='o', markersize=14,
                     markerfacecolor=a['color_clean'],
                     markeredgecolor='black', markeredgewidth=1.5,
-                    label=r'$\mathrm{Pt}_x\mathrm{Sn}_y\mathrm{O}_z$')
+                    label=_dot_label)
                 _leg_handles = [_dot_handle]
                 if _parts:   # 有统计量: 追加拟合线句柄
                     _leg_handles.append(_fit_line)
@@ -2572,7 +2600,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
                                   bbox_inches='tight', transparent=True)
                 else:
                     fig_u.savefig(f'{output_dir}/{fname_u}', dpi=300,
-                                  transparent=True)
+                                  bbox_inches='tight', transparent=True)
                 plt.close()
                 print(f'  [OK] {htag} (g_{panel_suffix}) univariate R²: {output_dir}/{fname_u}')
                 return fname_u
@@ -2616,8 +2644,8 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
         # ================================================================
         # 两套行配置: 图1=全部5行, 图2=3行(C/A/B3)
         # ================================================================
-        ROW_ORDER_FULL = {'预期C': 0, '预期A': 1, "预期B'": 2, "预期B''": 3, '预期B3': 4}
-        ROW_ORDER_3    = {'预期C': 0, '预期A': 1, '预期B3': 2}
+        ROW_ORDER_FULL = {'预期C': 0, '预期A': 1, "预期B'": 2, "预期B''": 3, '预期B3': 4, '预期D': 5}
+        ROW_ORDER_3    = {'预期C': 0, '预期A': 1, '预期D': 2}
 
         ROW_LABEL_MAP = {
             '预期C':   r'$T_m$ (PtSn–AlO)',
@@ -2625,6 +2653,7 @@ def plot_clean_panels(df, results_partial, output_dir="results/adhesion_analysis
             "预期B'":  r"$T_2$ (SnO–AlO, $E^3_{adh}$)",
             "预期B''": r"$T_2$ (SnO–AlO, $E^1_{adh}$ total)",
             '预期B3':  r'$T_2$ (SnO–AlO)',
+            '预期D':   r'$T_2$ (PtSnO–AlO)',
         }
 
         heatmap_configs = [

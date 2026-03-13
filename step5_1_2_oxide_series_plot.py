@@ -54,10 +54,13 @@ results/step5_1_2_oxide_series/
                      - transition : dδ/dT最大值跃变点法，绿色等高线
                      - both       : 同时显示两种判据
                      
-  --exclude, -e    : 排除指定结构，支持多个，支持简写格式：
-                     - 794       : 表示 Pt7Sn9O4
-                     - 68o4      : 表示 Pt6Sn8O4
-                     - Pt7Sn9O4  : 完整名称
+  --exclude, -e    : 排除指定结构,支持多个,支持简写和完整名称:
+                     - 794       : 简写,表示 Pt7Sn9O4
+                     - 68o4      : 简写,表示 Pt6Sn8O4
+                     - Pt7Sn9O4  : 完整名称(标准顺序)
+                     - Sn4Pt3O1  : 完整名称(任意顺序)
+                     - O4Pt3Sn6  : 完整名称(任意顺序)
+                     示例: -e 794 Sn4Pt3O1 O4Pt3Sn6
                      
   --fontscale, -f  : 字体缩放比例，默认1.0
   
@@ -172,6 +175,12 @@ STRUCTURE_NAME_MAP = {
     'cv': 'Pt6Sn8O4',
 }
 
+# 从熔点汇总名称到原始数据名称的映射
+# 用于在 step6_0_all_systems_data.csv 中查找 Lindemann 数据
+MP_TO_DATA_NAME_MAP = {
+    'g-1-o1sn4pt3': 'g',  # 熔点汇总中是 g-1-O1Sn4Pt3, 原始数据中是 g
+}
+
 
 def format_structure_label(name):
     """
@@ -242,8 +251,13 @@ def parse_args():
     p.add_argument('--tm-method', '-t', default='threshold', choices=['threshold', 'transition', 'both', 'cv-partition'],
                    help='熔点判据: threshold=δ=0.1阈值法, transition=dδ/dT跃变点法, both=两者都显示, cv-partition=热容分区边界')
     p.add_argument('--exclude', '-e', nargs='+', default=[], 
-                   help='排除指定结构，支持简写如 794 表示 Pt7Sn9O4')
+                   help='排除指定结构,支持简写(794)或完整名称(Sn4Pt3O1, O4Pt3Sn6等)')
     p.add_argument('--fontscale', '-f', type=float, default=1.0, help='字体缩放比例')
+    p.add_argument('--tick-fontsize',  type=int, default=None, help='刻度标签字号（覆盖 fontscale 计算值）')
+    p.add_argument('--label-fontsize', type=int, default=None, help='轴标题字号（覆盖 fontscale 计算值）')
+    p.add_argument('--cbar-fontsize',  type=int, default=None, help='colorbar 字号（覆盖 fontscale 计算值）')
+    p.add_argument('--figsize', type=str, default=None,
+                   help='combined 模式图片尺寸，格式 WxH（默认按结构数自动计算，如 20x8）')
     p.add_argument('--no-title', action='store_true', help='不显示图片标题')
     p.add_argument('--no-show', action='store_true', help='只保存图片，不弹出交互式窗口')
     p.add_argument('--no-legend', action='store_true', help='不显示图例')
@@ -254,16 +268,33 @@ def parse_args():
 
 def expand_structure_name(name):
     """
-    扩展简写结构名，如 794 -> Pt7Sn9O4
-    支持格式：794, 68o4, pt7sn9o4 等
+    扩展简写结构名,如 794 -> Pt7Sn9O4
+    支持格式:794, 68o4, pt7sn9o4, Sn4Pt3O1 等
     """
+    import re
     name = name.strip()
-    # 如果是纯数字如 794，解析为 Pt7Sn9O4
+    
+    # 如果是纯数字如 794,解析为 Pt7Sn9O4
     if name.isdigit() and len(name) == 3:
         return f"Pt{name[0]}Sn{name[1]}O{name[2]}"
     if name.isdigit() and len(name) == 2:
         return f"Pt{name[0]}Sn{name[1]}"
-    # 否则返回原名（会做大小写不敏感匹配）
+    
+    # 处理 68o4 这种简写格式 (数字+o+数字)
+    match = re.match(r'^(\d)(\d)o(\d)$', name.lower())
+    if match:
+        return f"Pt{match.group(1)}Sn{match.group(2)}O{match.group(3)}"
+    
+    # 如果是完整结构名(包含Pt/Sn/O字母),解析原子数并规范化为PtXSnYOZ格式
+    comp = parse_structure_composition(name)
+    if comp:
+        pt, sn, o = comp
+        if o > 0:
+            return f"Pt{pt}Sn{sn}O{o}"
+        else:
+            return f"Pt{pt}Sn{sn}"
+    
+    # 否则返回原名(会做大小写不敏感匹配)
     return name
 
 
@@ -291,15 +322,15 @@ def parse_structure_composition(name):
 def should_exclude_structure(struct_name, exclude_list):
     """
     检查结构是否应该被排除
-    基于 Pt、Sn、O 原子数匹配，而不是字符串匹配
+    基于结构名称的大小写不敏感匹配,只排除明确指定的结构名
+    不会同时排除同构异名的结构(如 Sn4Pt3O1 和 g-1-O1Sn4Pt3)
     """
-    struct_comp = parse_structure_composition(struct_name)
-    if struct_comp is None:
-        return False
+    struct_lower = struct_name.lower().strip()
     
     for excl in exclude_list:
-        excl_comp = parse_structure_composition(excl)
-        if excl_comp and excl_comp == struct_comp:
+        excl_lower = excl.lower().strip()
+        # 直接字符串匹配
+        if struct_lower == excl_lower:
             return True
     return False
 
@@ -347,8 +378,8 @@ def plot_heatmap_grid(df_all, df_mp, args):
     """绑制 2x2 热图子图"""
     fs = args.fontscale
     
-    # 统一的温度网格 (100K 间隔)
-    unified_temps = np.arange(200, 1150, 100)
+    # 统一的温度网格 (100K 间隔, 200-1800K)
+    unified_temps = np.arange(200, 1850, 100)
     
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
     axes = axes.flatten()
@@ -408,7 +439,7 @@ def plot_heatmap_grid(df_all, df_mp, args):
         
         # 绘制热图
         im = ax.imshow(data, aspect='auto', origin='lower', cmap=plt.cm.RdYlBu_r,
-                      interpolation='bilinear', vmin=0, vmax=0.3)
+                      interpolation='bilinear', vmin=0, vmax=0.45)
         
         # 坐标轴
         ax.set_xticks(np.arange(len(cols)))
@@ -430,6 +461,7 @@ def plot_heatmap_grid(df_all, df_mp, args):
     cbar_ax = fig.add_axes([0.90, 0.15, 0.02, 0.7])
     cbar = fig.colorbar(im, cax=cbar_ax)
     cbar.set_label('Lindemann Index δ', fontsize=int(12*fs))
+    cbar.set_ticks([0, 0.1, 0.2, 0.3, 0.4])
     cbar.ax.tick_params(labelsize=int(10*fs))
     cbar.ax.axhline(0.1, color='black', linestyle='--', linewidth=2)
     
@@ -447,13 +479,18 @@ def plot_heatmap_grid(df_all, df_mp, args):
 def plot_combined_heatmap(df_all, df_mp, args):
     """绑制 O1-O4 合并热图（横向排列，按总原子数排序）"""
     fs = args.fontscale
+    # 若用户显式传入字号，则直接用；否则沿用 fontscale 乘基准值
+    TICK_FS  = args.tick_fontsize  if args.tick_fontsize  else int(28 * fs)
+    LABEL_FS = args.label_fontsize if args.label_fontsize else int(34 * fs)
+    CBAR_FS  = args.cbar_fontsize  if args.cbar_fontsize  else int(28 * fs)
     from scipy.interpolate import interp1d
     
-    # 处理排除列表：扩展简写
-    exclude_list = [expand_structure_name(e) for e in args.exclude]
+    # 排除列表：直接使用用户输入的结构名,不再规范化
+    # 这样可以精确控制排除哪个结构,不会误伤同构异名的结构
+    exclude_list = args.exclude
     
-    # 统一的温度网格 (100K 间隔)
-    unified_temps = np.arange(200, 1150, 100)
+    # 统一的温度网格 (100K 间隔, 200-1800K)
+    unified_temps = np.arange(200, 1850, 100)
     
     # 收集所有氧化物结构
     all_structures = []
@@ -470,7 +507,7 @@ def plot_combined_heatmap(df_all, df_mp, args):
             all_structures.append(df_series)
     
     if exclude_list:
-        print(f"  Excluding structures: {args.exclude} -> {exclude_list}")
+        print(f"  Excluding structures: {exclude_list}")
     
     if not all_structures:
         print("[WARN] No oxide structures found")
@@ -499,10 +536,30 @@ def plot_combined_heatmap(df_all, df_mp, args):
     print(f"  Combined heatmap: {len(structures)} structures, {sort_desc}")
     
     # 提取 Lindemann 数据并重采样
-    df_sel = df_all[df_all['structure'].isin(structures)].copy()
+    # 创建结构名映射:从熔点汇总名称到原始数据名称
+    struct_to_data_name = {}
+    for struct in structures:
+        # 检查是否需要映射(大小写不敏感)
+        data_name = struct
+        for mp_name, data_name_mapped in MP_TO_DATA_NAME_MAP.items():
+            if struct.lower() == mp_name.lower():
+                data_name = data_name_mapped
+                print(f"  [INFO] Mapping '{struct}' -> '{data_name}' for data lookup")
+                break
+        struct_to_data_name[struct] = data_name
+    
+    # 使用映射后的名称查找数据
+    data_names = list(struct_to_data_name.values())
+    df_sel = df_all[df_all['structure'].isin(data_names)].copy()
+    
+    # 将数据名称映射回熔点汇总名称
+    reverse_map = {v: k for k, v in struct_to_data_name.items()}
+    df_sel['structure'] = df_sel['structure'].map(lambda x: reverse_map.get(x, x))
+    
     df_mean = df_sel.groupby(['structure', 'temp']).agg(delta_mean=('delta', 'mean')).reset_index()
     
     resampled_data = []
+    valid_structures = []  # 记录有足够数据的结构
     for struct in structures:
         df_struct = df_mean[df_mean['structure'] == struct].sort_values('temp')
         if len(df_struct) >= 2:
@@ -514,6 +571,12 @@ def plot_combined_heatmap(df_all, df_mp, args):
                     'temp': t,
                     'delta_mean': f(t)
                 })
+            valid_structures.append(struct)
+        else:
+            print(f"  [WARN] Skipping {struct}: insufficient data ({len(df_struct)} points)")
+    
+    # 更新structures列表为只包含有效数据的结构
+    structures = valid_structures
     
     df_resampled = pd.DataFrame(resampled_data)
     struct_to_idx = {s: i for i, s in enumerate(structures)}
@@ -525,25 +588,36 @@ def plot_combined_heatmap(df_all, df_mp, args):
     cols = pivot_table.columns.values
     data = pivot_table.values.astype(float)
     
-    # 创建图（增大尺寸以适应更大的字体）
-    fig_width = max(24, len(structures) * 1.2)
-    fig, ax = plt.subplots(figsize=(fig_width, 10))
+    # 创建图（支持 --figsize 手动指定，否则按结构数自动计算）
+    if args.figsize:
+        try:
+            fig_w_arg, fig_h_arg = [float(x) for x in args.figsize.lower().split('x')]
+        except Exception:
+            print(f"[WARN] --figsize 格式错误，应为 WxH（如 20x8），使用自动计算")
+            fig_w_arg = max(24, len(structures) * 1.2)
+            fig_h_arg = 10
+    else:
+        fig_w_arg = max(24, len(structures) * 1.2)
+        fig_h_arg = 10
+    fig, ax = plt.subplots(figsize=(fig_w_arg, fig_h_arg))
     
     # 绘制热图
     im = ax.imshow(data, aspect='auto', origin='lower', cmap=plt.cm.RdYlBu_r,
-                  interpolation='bilinear', vmin=0, vmax=0.3)
+                  interpolation='bilinear', vmin=0, vmax=0.45)
     
     # x 轴标签：(x,y,z) 格式
     x_labels = [format_structure_label(s) for s in structures]
     ax.set_xticks(np.arange(len(cols)))
-    ax.set_xticklabels(x_labels, fontsize=int(28*fs), rotation=45, ha='right')
+    ax.set_xticklabels(x_labels, fontsize=TICK_FS, rotation=45, ha='right')
     
-    # y 轴（去掉K单位）
-    ax.set_yticks(np.arange(len(temps)))
-    ax.set_yticklabels([f'{int(t)}' for t in temps], fontsize=int(28*fs))
+    # y 轴（去掉K单位, 每200K显示一个刻度避免17点过密）
+    ytick_step = max(1, round(200 / (temps[1] - temps[0]))) if len(temps) > 1 else 1
+    ytick_idx = np.arange(0, len(temps), ytick_step)
+    ax.set_yticks(ytick_idx)
+    ax.set_yticklabels([f'{int(temps[i])}' for i in ytick_idx], fontsize=TICK_FS)
     
-    ax.set_xlabel('Pt$_x$Sn$_y$O$_z$ (x,y,z)', fontsize=int(34*fs), fontweight='bold')
-    ax.set_ylabel('Temperature (K)', fontsize=int(34*fs), fontweight='bold')
+    ax.set_xlabel('Pt$_x$Sn$_y$O$_z$ (x,y,z)', fontsize=LABEL_FS)
+    ax.set_ylabel('Temperature (K)', fontsize=LABEL_FS)
     
     # 等值线 - 根据判据选择
     X, Y = np.meshgrid(np.arange(len(cols)), np.arange(len(temps)))
@@ -592,6 +666,11 @@ def plot_combined_heatmap(df_all, df_mp, args):
                 vx, vy = zip(*valid_pairs)
                 ax.plot(vx, vy, 'w-', linewidth=2.5, alpha=0.8)
                 ax.plot(vx, vy, 'k--', linewidth=2)
+            elif len(valid_pairs) == 1:
+                # 单个结构画一条水平虚线（横跨该列宽度）
+                vx, vy = valid_pairs[0]
+                ax.plot([vx - 0.4, vx + 0.4], [vy, vy], 'w-', linewidth=2.5, alpha=0.8)
+                ax.plot([vx - 0.4, vx + 0.4], [vy, vy], 'k--', linewidth=2)
     
     # 辅助函数：获取氧系列边界（用于分段绘制）
     def get_series_boundaries():
@@ -635,6 +714,10 @@ def plot_combined_heatmap(df_all, df_mp, args):
                 vx, vy = zip(*valid_pairs)
                 ax.plot(vx, vy, 'w-', linewidth=2.5, alpha=0.8)
                 ax.plot(vx, vy, 'g--', linewidth=2)
+            elif len(valid_pairs) == 1:
+                vx, vy = valid_pairs[0]
+                ax.plot([vx - 0.4, vx + 0.4], [vy, vy], 'w-', linewidth=2.5, alpha=0.8)
+                ax.plot([vx - 0.4, vx + 0.4], [vy, vy], 'g--', linewidth=2)
     
     # 热容分区边界线 (cv-partition)
     if args.tm_method == 'cv-partition':
@@ -659,6 +742,10 @@ def plot_combined_heatmap(df_all, df_mp, args):
                 vx, vy = zip(*valid_pairs)
                 ax.plot(vx, vy, 'w-', linewidth=2.5, alpha=0.8)
                 ax.plot(vx, vy, 'm--', linewidth=2)
+            elif len(valid_pairs) == 1:
+                vx, vy = valid_pairs[0]
+                ax.plot([vx - 0.4, vx + 0.4], [vy, vy], 'w-', linewidth=2.5, alpha=0.8)
+                ax.plot([vx - 0.4, vx + 0.4], [vy, vy], 'm--', linewidth=2)
     
     # 绘制氧系列分隔线（仅当 --sort oxygen 时）
     if args.sort == 'oxygen' and args.separator != 'none':
@@ -678,8 +765,9 @@ def plot_combined_heatmap(df_all, df_mp, args):
     
     # Colorbar
     cbar = fig.colorbar(im, ax=ax, fraction=0.02, pad=0.02)
-    cbar.set_label('Lindemann Index δ', fontsize=int(34*fs))
-    cbar.ax.tick_params(labelsize=int(28*fs))
+    cbar.set_label('Lindemann Index δ', fontsize=CBAR_FS)
+    cbar.set_ticks([0, 0.1, 0.2, 0.3, 0.4])
+    cbar.ax.tick_params(labelsize=CBAR_FS)
     if args.tm_method in ['threshold', 'both']:
         cbar.ax.axhline(0.1, color='black', linestyle='--', linewidth=2)
     
@@ -698,7 +786,7 @@ def plot_combined_heatmap(df_all, df_mp, args):
                                       label='Cv Partition'))
     # 只有当有图例元素且没有 --no-legend 时才显示
     if legend_elements and not args.no_legend:
-        ax.legend(handles=legend_elements, loc='upper left', fontsize=int(26*fs), 
+        ax.legend(handles=legend_elements, loc='upper left', fontsize=TICK_FS,
                  frameon=False)  # frameon=False 去掉框框
     
     # 标题显示判据类型
@@ -788,8 +876,8 @@ def plot_tm_comparison(df_mp, args):
         ax.set_xticklabels([format_structure_label(s) for s in df_plot['structure']], 
                            rotation=45, ha='right', fontsize=int(9*fs))
     
-    ax.set_xlabel('Structure', fontsize=int(12*fs), fontweight='bold')
-    ax.set_ylabel('Melting Point $T_m$ (K)', fontsize=int(12*fs), fontweight='bold')
+    ax.set_xlabel('Structure', fontsize=int(12*fs))
+    ax.set_ylabel('Melting Point $T_m$ (K)', fontsize=int(12*fs))
     ax.tick_params(axis='y', labelsize=int(11*fs))
     
     method_label = {'threshold': '(Threshold)', 'transition': '(Transition)', 'both': '(Both Methods)',
@@ -837,8 +925,8 @@ def plot_tm_vs_metal(df_mp, args):
             x_line = np.linspace(df_series['metal_total'].min(), df_series['metal_total'].max(), 50)
             ax.plot(x_line, p(x_line), '--', color=config['color'], alpha=0.5, linewidth=1.5)
     
-    ax.set_xlabel('Number of Metal Atoms (Pt+Sn)', fontsize=int(12*fs), fontweight='bold')
-    ax.set_ylabel('Melting Point $T_m$ (K)', fontsize=int(12*fs), fontweight='bold')
+    ax.set_xlabel('Number of Metal Atoms (Pt+Sn)', fontsize=int(12*fs))
+    ax.set_ylabel('Melting Point $T_m$ (K)', fontsize=int(12*fs))
     ax.tick_params(axis='both', labelsize=int(11*fs))
     
     if not args.no_title:

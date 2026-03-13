@@ -89,7 +89,8 @@ OUTPUT_DIR = BASE_DIR / 'results' / 'per_atom_dynamics'
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 数据文件路径
-LINDEMANN_DIR = DATA_DIR / 'lindemann' / 'per-atoms'
+# 默认读取 sup86-50k（50K步长，19温度点）；旧数据: DATA_DIR / 'lindemann' / 'per-atoms'
+LINDEMANN_DIR = DATA_DIR / 'lindemann' / 'per-atoms' / 'sup86-50k'
 MSD_DIR = DATA_DIR / 'gmx_msd' / 'per-atom' / 'collected_gmx_per_atom_msd'
 
 # 元素颜色方案
@@ -111,6 +112,12 @@ ELEMENT_MARKERS = {
 # 阈值
 HIGH_LINDEMANN_THRESHOLD = 0.10  # δ > 0.10 为高振动
 HIGH_D_THRESHOLD = 0.01          # D > 0.01 (1e-5 cm²/s) 为高扩散
+
+# GMX ensemble MSD 数据路径
+GMX_MSD_DIR = DATA_DIR / 'gmx_msd' / 'unwrap' / 'gmx_msd_results_20251118_152614'
+
+# Structure-level Lindemann 数据路径 (与Step 7.8.5一致)
+STRUCTURE_LEVEL_LINDEMANN_FILE = BASE_DIR / 'results' / 'step7_8_2_alloy_series' / 'structure_level_lindemann.csv'
 
 # 体系分类颜色 - 与 step6_3_1 一致
 SERIES_COLORS = {
@@ -247,6 +254,9 @@ def load_lindemann_data(data_dir):
     print("\n[1/4] 加载 Per-Atom Lindemann 数据...")
     
     files = sorted(Path(data_dir).glob('per_atom_master_*.csv'))
+    # 同时搜索子目录（兼容旧目录结构和 sup86-50k 等子目录）
+    if not files:
+        files = sorted(Path(data_dir).glob('*/per_atom_master_*.csv'))
     if not files:
         print(f"  [WARNING] 未找到 Lindemann 数据文件: {data_dir}")
         return None
@@ -316,6 +326,7 @@ def load_msd_data(data_dir):
         'atom_id': 'atom_id',
         '元素': 'element',
         'D(1e-5 cm': 'D',  # D值列可能有不完整名称
+        '完整目录路径': 'full_path',  # 用于精确匹配run
     }
     
     for old, new in col_map.items():
@@ -330,6 +341,15 @@ def load_msd_data(data_dir):
             if 'D(' in col or col.startswith('D'):
                 df_all = df_all.rename(columns={col: 'D'})
                 break
+    
+    # 确保有full_path列
+    if 'full_path' not in df_all.columns:
+        # 尝试从其他列获取
+        if '完整目录路径' in df_all.columns:
+            df_all['full_path'] = df_all['完整目录路径']
+        elif 'XVG 文件路径' in df_all.columns:
+            # 从XVG路径提取目录
+            df_all['full_path'] = df_all['XVG 文件路径'].apply(lambda x: str(x).rsplit('/', 1)[0] if pd.notna(x) else None)
     
     print(f"  [OK] 合并: {len(df_all)} atom records, {df_all['structure'].nunique()} structures")
     
@@ -368,13 +388,26 @@ def merge_data(df_lindemann, df_msd, structure_filter=None, temp_range=None):
     df_lindemann['atom_id'] = pd.to_numeric(df_lindemann['atom_id'], errors='coerce')
     df_msd['atom_id'] = pd.to_numeric(df_msd['atom_id'], errors='coerce')
     
-    # 按 structure_std + temp + atom_id 合并
-    df_merged = pd.merge(
-        df_lindemann[['structure', 'structure_std', 'temp', 'atom_id', 'element', 'delta']],
-        df_msd[['structure_std', 'temp', 'atom_id', 'D']],
-        on=['structure_std', 'temp', 'atom_id'],
-        how='inner'
-    )
+    # 重要: 按完整路径+temp+atom_id合并,避免多个run交叉匹配
+    # 检查是否有path列(lindemann)和full_path列(msd)
+    if 'path' in df_lindemann.columns and 'full_path' in df_msd.columns:
+        print("  [INFO] 使用完整路径匹配 (避免多run交叉)")
+        df_merged = pd.merge(
+            df_lindemann[['structure', 'structure_std', 'path', 'temp', 'atom_id', 'element', 'delta']],
+            df_msd[['structure_std', 'full_path', 'temp', 'atom_id', 'D']],
+            left_on=['path', 'temp', 'atom_id'],
+            right_on=['full_path', 'temp', 'atom_id'],
+            how='inner'
+        )
+    else:
+        # 降级方案: 按 structure_std + temp + atom_id 合并 (可能产生重复!)
+        print("  [WARNING] 无完整路径信息,使用structure+temp+atom_id合并 (可能重复)")
+        df_merged = pd.merge(
+            df_lindemann[['structure', 'structure_std', 'temp', 'atom_id', 'element', 'delta']],
+            df_msd[['structure_std', 'temp', 'atom_id', 'D']],
+            on=['structure_std', 'temp', 'atom_id'],
+            how='inner'
+        )
     
     print(f"  [INFO] 合并结果: {len(df_merged)} matched records")
     
@@ -426,9 +459,429 @@ def classify_mobility(row):
 # 统计分析函数
 # ============================================================================
 
-def calculate_element_statistics(df):
-    """按元素计算统计量 (包含系列信息)"""
-    print("\n[4/4] 计算元素统计...")
+def calculate_ensemble_D(df_group):
+    """
+    计算系综平均扩散系数
+    
+    ⚠️ 已弃用此方法! 
+    现在使用 calculate_ensemble_D_from_gmx_msd() 从GMX ensemble MSD拟合
+    
+    旧方法: 对每个元素,先对所有run的原子D值求平均(得到每个run的平均D),
+         然后对所有run的平均D再求平均,得到系综平均D
+         
+    这比直接对所有原子的D取平均更合理,因为考虑了run间的统计独立性
+    
+    参数:
+        df_group: 包含structure, temp, element, D列的DataFrame
+        
+    返回:
+        D_ensemble: 系综平均扩散系数
+        D_std_runs: run间的标准差
+        n_runs: run数量
+    """
+    if 'full_path' not in df_group.columns or df_group['full_path'].isna().all():
+        # 如果没有run信息,退化为简单平均
+        return df_group['D'].mean(), df_group['D'].std(), 1
+    
+    # 按run分组,计算每个run的平均D
+    run_D_means = df_group.groupby('full_path')['D'].mean()
+    
+    # 计算系综平均
+    D_ensemble = run_D_means.mean()
+    D_std_runs = run_D_means.std() if len(run_D_means) > 1 else 0
+    n_runs = len(run_D_means)
+    
+    return D_ensemble, D_std_runs, n_runs
+
+
+def read_gmx_msd_xvg(filepath):
+    """读取GMX MSD .xvg文件"""
+    time_data = []
+    msd_data = []
+    
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or line.startswith('@'):
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        t = float(parts[0])
+                        msd_nm2 = float(parts[1])
+                        msd_a2 = msd_nm2 * 100  # nm² -> Ų
+                        time_data.append(t)
+                        msd_data.append(msd_a2)
+                    except ValueError:
+                        continue
+    except Exception as e:
+        return None, None
+    
+    if len(time_data) == 0:
+        return None, None
+    
+    return np.array(time_data), np.array(msd_data)
+
+
+def calculate_ensemble_D_from_gmx_msd(structure, temp, element, 
+                                       fit_range=(20, 140), 
+                                       window_size=120, step=5):
+    """
+    从GMX ensemble MSD计算扩散系数 (与step7_5一致的方法)
+    
+    方法:
+    1. 加载该structure/temp/element的所有runs的MSD
+    2. 计算平均MSD曲线
+    3. 使用滑动窗口拟合 (window=120ps, step=5ps)
+    4. 返回平均D值和CV
+    
+    参数:
+        structure: 如 'pt8sn6'
+        temp: 温度(K), 如 900
+        element: 元素, 如 'Pt', 'Sn'
+        fit_range: 拟合起始范围 (ps)
+        window_size: 滑动窗口宽度 (ps)
+        step: 滑动步长 (ps)
+        
+    返回:
+        D_mean: 平均扩散系数 (×10⁻⁵ cm²/s)
+        D_std: 标准差 (从滑动窗口)
+        CV: 变异系数 (%)
+        r2_mean: 平均R²
+        n_runs: run数量
+    """
+    from scipy import stats
+    
+    # 构建温度字符串
+    temp_str = f'{temp}K'
+    
+    # 扫描文件
+    msd_list = []
+    for xvg_file in GMX_MSD_DIR.rglob("*_msd_*.xvg"):
+        try:
+            parts = xvg_file.parts
+            filename = xvg_file.stem
+            
+            # 检查元素
+            if '_msd_' not in filename:
+                continue
+            file_element = filename.split('_msd_')[-1]
+            if file_element != element:
+                continue
+            
+            # 检查温度和结构
+            temperature = None
+            composition = None
+            for i in range(len(parts)-1, 0, -1):
+                if parts[i].endswith('K'):
+                    temperature = parts[i]
+                    composition = parts[i-1]
+                    break
+            
+            if temperature != temp_str:
+                continue
+            if not composition.lower().startswith(structure.lower()):
+                continue
+            
+            # 读取数据
+            time, msd = read_gmx_msd_xvg(xvg_file)
+            if time is not None:
+                msd_list.append((time, msd))
+        except:
+            continue
+    
+    if not msd_list:
+        return None, None, None, None, 0
+    
+    # 计算平均MSD
+    min_len = min(len(msd) for _, msd in msd_list)
+    msd_aligned = np.array([msd[:min_len] for _, msd in msd_list])
+    time_common = msd_list[0][0][:min_len]
+    msd_mean = np.mean(msd_aligned, axis=0)
+    
+    # 滑动窗口拟合 (与step7_5一致)
+    actual_max = time_common[-1]
+    slide_start = fit_range[0]
+    slide_end = actual_max - window_size
+    
+    if slide_end < slide_start + 2 * step:
+        # 回退到单窗口
+        mask = (time_common >= fit_range[0]) & (time_common <= min(fit_range[1], actual_max))
+        if mask.sum() < 10:
+            return None, None, None, None, len(msd_list)
+        
+        time_fit = time_common[mask]
+        msd_fit = msd_mean[mask]
+        
+        slope, intercept, r_value, p_value, std_err = stats.linregress(time_fit, msd_fit)
+        D_A2_per_ps = slope / 6.0
+        D_cm2_per_s = D_A2_per_ps * 1e-4
+        
+        return D_cm2_per_s * 1e5, 0.0, 0.0, r_value**2, len(msd_list)
+    
+    # 滑动窗口拟合
+    D_values = []
+    r2_values = []
+    
+    for t_start in np.arange(slide_start, slide_end + step, step):
+        t_end = t_start + window_size
+        mask = (time_common >= t_start) & (time_common <= t_end)
+        
+        if mask.sum() < 10:
+            continue
+        
+        time_fit = time_common[mask]
+        msd_fit = msd_mean[mask]
+        
+        slope, intercept, r_value, p_value, std_err = stats.linregress(time_fit, msd_fit)
+        D_A2_per_ps = slope / 6.0
+        D_cm2_per_s = D_A2_per_ps * 1e-4
+        
+        D_values.append(D_cm2_per_s * 1e5)  # 转换为10^-5 cm²/s
+        r2_values.append(r_value ** 2)
+    
+    if not D_values:
+        return None, None, None, None, len(msd_list)
+    
+    D_values = np.array(D_values)
+    D_mean = np.mean(D_values)
+    D_std = np.std(D_values)
+    CV = D_std / D_mean * 100 if D_mean != 0 else 0
+    r2_mean = np.mean(r2_values)
+    
+    return D_mean, D_std, CV, r2_mean, len(msd_list)
+
+
+def calculate_ensemble_D_with_filtering(structure, temp, element, 
+                                         fit_range=(20, 140), 
+                                         window_size=120, step=5,
+                                         filter_method='r2',
+                                         r2_threshold=0.90,
+                                         outlier_sigma=2.0):
+    """
+    从GMX ensemble MSD计算扩散系数 - 带质量筛选
+    
+    筛选方法:
+    1. 'r2': 筛除R²低于阈值的run
+    2. 'outlier': 筛除D值偏离均值超过N个标准差的run
+    3. 'both': 同时使用R²和离群值筛选
+    4. None: 不筛选(默认)
+    
+    参数:
+        structure: 结构名称
+        temp: 温度(K)
+        element: 元素
+        fit_range: 拟合范围 (ps)
+        window_size: 滑动窗口大小 (ps)
+        step: 滑动步长 (ps)
+        filter_method: 筛选方法 ('r2', 'outlier', 'both', None)
+        r2_threshold: R²阈值 (默认0.90)
+        outlier_sigma: 离群值判断标准差倍数 (默认2.0)
+    
+    返回:
+        D_mean, D_std, CV, r2_mean, n_runs, n_filtered, filter_info
+    """
+    from scipy import stats
+    
+    temp_str = f'{temp}K'
+    
+    # 1. 收集所有MSD文件
+    msd_list = []
+    msd_files = []  # 保存文件路径
+    
+    for xvg_file in GMX_MSD_DIR.rglob("*_msd_*.xvg"):
+        try:
+            parts = xvg_file.parts
+            filename = xvg_file.stem
+            
+            if '_msd_' not in filename:
+                continue
+            file_element = filename.split('_msd_')[-1]
+            if file_element != element:
+                continue
+            
+            temperature = None
+            composition = None
+            for i in range(len(parts)-1, 0, -1):
+                if parts[i].endswith('K'):
+                    temperature = parts[i]
+                    composition = parts[i-1]
+                    break
+            
+            if temperature != temp_str:
+                continue
+            if not composition.lower().startswith(structure.lower()):
+                continue
+            
+            time, msd = read_gmx_msd_xvg(xvg_file)
+            if time is not None:
+                msd_list.append((time, msd))
+                msd_files.append(str(xvg_file))
+        except:
+            continue
+    
+    if not msd_list:
+        return None, None, None, None, 0, 0, {}
+    
+    n_total = len(msd_list)
+    
+    # 2. 如果需要筛选,先对每个run拟合计算D和R²
+    if filter_method is not None:
+        run_D_values = []
+        run_r2_values = []
+        
+        for time, msd in msd_list:
+            # 简单拟合整个fit_range
+            mask = (time >= fit_range[0]) & (time <= fit_range[1])
+            if mask.sum() < 10:
+                run_D_values.append(np.nan)
+                run_r2_values.append(0.0)
+                continue
+            
+            time_fit = time[mask]
+            msd_fit = msd[mask]
+            
+            slope, intercept, r_value, p_value, std_err = stats.linregress(time_fit, msd_fit)
+            D_A2_per_ps = slope / 6.0
+            D_cm2_per_s = D_A2_per_ps * 1e-4
+            
+            run_D_values.append(D_cm2_per_s * 1e5)
+            run_r2_values.append(r_value ** 2)
+        
+        run_D_values = np.array(run_D_values)
+        run_r2_values = np.array(run_r2_values)
+        
+        # 3. 应用筛选
+        keep_mask = np.ones(n_total, dtype=bool)
+        filter_reasons = []
+        
+        if filter_method in ['r2', 'both']:
+            # 筛除低R²
+            r2_mask = run_r2_values >= r2_threshold
+            keep_mask &= r2_mask
+            n_r2_filtered = (~r2_mask).sum()
+            if n_r2_filtered > 0:
+                filter_reasons.append(f"R²<{r2_threshold}: {n_r2_filtered} runs")
+        
+        if filter_method in ['outlier', 'both']:
+            # 筛除离群值 (使用有效D值)
+            valid_D = run_D_values[~np.isnan(run_D_values)]
+            if len(valid_D) > 2:
+                D_mean_temp = np.mean(valid_D)
+                D_std_temp = np.std(valid_D)
+                
+                outlier_mask = np.ones(n_total, dtype=bool)
+                for i in range(n_total):
+                    if not np.isnan(run_D_values[i]):
+                        z_score = abs(run_D_values[i] - D_mean_temp) / D_std_temp
+                        if z_score > outlier_sigma:
+                            outlier_mask[i] = False
+                
+                keep_mask &= outlier_mask
+                n_outlier_filtered = (~outlier_mask).sum()
+                if n_outlier_filtered > 0:
+                    filter_reasons.append(f"D outlier (>{outlier_sigma}σ): {n_outlier_filtered} runs")
+        
+        # 4. 应用筛选
+        n_filtered = (~keep_mask).sum()
+        
+        if n_filtered > 0:
+            msd_list = [msd_list[i] for i in range(n_total) if keep_mask[i]]
+            msd_files = [msd_files[i] for i in range(n_total) if keep_mask[i]]
+            
+            filter_info = {
+                'n_total': n_total,
+                'n_kept': len(msd_list),
+                'n_filtered': n_filtered,
+                'filter_reasons': filter_reasons,
+                'kept_files': msd_files,
+                'run_D_before': run_D_values,
+                'run_r2_before': run_r2_values
+            }
+        else:
+            filter_info = {
+                'n_total': n_total,
+                'n_kept': n_total,
+                'n_filtered': 0,
+                'filter_reasons': ['No runs filtered']
+            }
+    else:
+        n_filtered = 0
+        filter_info = {}
+    
+    if not msd_list:
+        return None, None, None, None, n_total, n_filtered, filter_info
+    
+    # 5. 计算筛选后的ensemble D (使用滑动窗口)
+    min_len = min(len(msd) for _, msd in msd_list)
+    msd_aligned = np.array([msd[:min_len] for _, msd in msd_list])
+    time_common = msd_list[0][0][:min_len]
+    msd_mean = np.mean(msd_aligned, axis=0)
+    
+    # 滑动窗口拟合
+    actual_max = time_common[-1]
+    slide_start = fit_range[0]
+    slide_end = actual_max - window_size
+    
+    if slide_end < slide_start + 2 * step:
+        # 回退到单窗口
+        mask = (time_common >= fit_range[0]) & (time_common <= min(fit_range[1], actual_max))
+        if mask.sum() < 10:
+            return None, None, None, None, len(msd_list), n_filtered, filter_info
+        
+        time_fit = time_common[mask]
+        msd_fit = msd_mean[mask]
+        
+        slope, intercept, r_value, p_value, std_err = stats.linregress(time_fit, msd_fit)
+        D_A2_per_ps = slope / 6.0
+        D_cm2_per_s = D_A2_per_ps * 1e-4
+        
+        return D_cm2_per_s * 1e5, 0.0, 0.0, r_value**2, len(msd_list), n_filtered, filter_info
+    
+    # 滑动窗口拟合
+    D_values = []
+    r2_values = []
+    
+    for t_start in np.arange(slide_start, slide_end + step, step):
+        t_end = t_start + window_size
+        mask = (time_common >= t_start) & (time_common <= t_end)
+        
+        if mask.sum() < 10:
+            continue
+        
+        time_fit = time_common[mask]
+        msd_fit = msd_mean[mask]
+        
+        slope, intercept, r_value, p_value, std_err = stats.linregress(time_fit, msd_fit)
+        D_A2_per_ps = slope / 6.0
+        D_cm2_per_s = D_A2_per_ps * 1e-4
+        
+        D_values.append(D_cm2_per_s * 1e5)
+        r2_values.append(r_value ** 2)
+    
+    if not D_values:
+        return None, None, None, None, len(msd_list), n_filtered, filter_info
+    
+    D_values = np.array(D_values)
+    D_mean = np.mean(D_values)
+    D_std = np.std(D_values)
+    CV = D_std / D_mean * 100 if D_mean != 0 else 0
+    r2_mean = np.mean(r2_values)
+    
+    return D_mean, D_std, CV, r2_mean, len(msd_list), n_filtered, filter_info
+
+
+def calculate_element_statistics(df, use_ensemble_D=True, use_gmx_msd=True):
+    """
+    按元素计算统计量 (包含系列信息)
+    
+    参数:
+        df: 合并后的数据
+        use_ensemble_D: 是否使用系综平均计算D (推荐True)
+        use_gmx_msd: 是否从GMX ensemble MSD计算D (推荐True, 与step7_5一致)
+    """
+    print(f"\n[4/4] 计算元素统计 (系综平均D: {use_ensemble_D}, 使用GMX MSD: {use_gmx_msd})...")
     
     stats_list = []
     
@@ -442,13 +895,51 @@ def calculate_element_statistics(df):
         for element in group['element'].unique():
             elem_data = group[group['element'] == element]
             
-            stats_list.append({
+            # 计算扩散系数
+            if use_gmx_msd:
+                # 新方法: 从GMX ensemble MSD拟合 (与step7_5一致)
+                D_mean, D_std, CV, r2_mean, n_runs = calculate_ensemble_D_from_gmx_msd(
+                    structure, temp, element
+                )
+                
+                if D_mean is None:
+                    print(f"  [WARNING] 无法从GMX MSD计算 {structure} {temp}K {element}, 使用per-atom平均")
+                    # 回退到旧方法
+                    if use_ensemble_D:
+                        D_ensemble, D_std_runs, n_runs = calculate_ensemble_D(elem_data)
+                        D_mean = D_ensemble
+                        D_std = D_std_runs
+                        CV = None
+                        r2_mean = None
+                    else:
+                        D_mean = elem_data['D'].mean()
+                        D_std = elem_data['D'].std()
+                        n_runs = elem_data['full_path'].nunique() if 'full_path' in elem_data.columns else 1
+                        CV = None
+                        r2_mean = None
+            elif use_ensemble_D:
+                # 旧方法1: 系综平均 (per-atom平均)
+                D_ensemble, D_std_runs, n_runs = calculate_ensemble_D(elem_data)
+                D_mean = D_ensemble
+                D_std = D_std_runs
+                CV = None
+                r2_mean = None
+            else:
+                # 旧方法2: 直接对所有原子取平均
+                D_mean = elem_data['D'].mean()
+                D_std = elem_data['D'].std()
+                n_runs = elem_data['full_path'].nunique() if 'full_path' in elem_data.columns else 1
+                CV = None
+                r2_mean = None
+            
+            stats_dict = {
                 'structure': structure,
                 'temp': temp,
                 'series': series,
                 'has_oxide': has_oxide,
                 'element': element,
                 'n_atoms': len(elem_data),
+                'n_runs': n_runs,  # run数量
                 # Lindemann 统计
                 'delta_mean': elem_data['delta'].mean(),
                 'delta_std': elem_data['delta'].std(),
@@ -456,8 +947,8 @@ def calculate_element_statistics(df):
                 'delta_max': elem_data['delta'].max(),
                 'delta_median': elem_data['delta'].median(),
                 # D 统计
-                'D_mean': elem_data['D'].mean(),
-                'D_std': elem_data['D'].std(),
+                'D_mean': D_mean,
+                'D_std': D_std,
                 'D_min': elem_data['D'].min(),
                 'D_max': elem_data['D'].max(),
                 'D_median': elem_data['D'].median(),
@@ -466,7 +957,14 @@ def calculate_element_statistics(df):
                 'high_D_ratio': (elem_data['D'] > HIGH_D_THRESHOLD).mean(),
                 'active_ratio': ((elem_data['delta'] > HIGH_LINDEMANN_THRESHOLD) & 
                                 (elem_data['D'] > HIGH_D_THRESHOLD)).mean(),
-            })
+            }
+            
+            # 添加GMX MSD特有的指标
+            if use_gmx_msd and CV is not None:
+                stats_dict['CV'] = CV
+                stats_dict['r2_mean'] = r2_mean
+            
+            stats_list.append(stats_dict)
     
     df_stats = pd.DataFrame(stats_list)
     print(f"  [OK] 生成 {len(df_stats)} 条元素统计")
@@ -474,9 +972,41 @@ def calculate_element_statistics(df):
     return df_stats
 
 
-def calculate_series_statistics(df):
-    """按系列(气相/负载/含氧)计算统计量"""
-    print("\n[*] 计算分系列统计...")
+def load_structure_level_lindemann():
+    """
+    读取structure-level的Lindemann指数 (与Step 7.8.5一致)
+    
+    这个方法更符合系综平均的物理意义:
+    1. 每次run内: 先对元素内所有原子求平均 (保持该run的特征)
+    2. 多次run间: 再对多次run求平均 (真正的系综平均)
+    
+    Returns:
+        pd.DataFrame with columns: structure, temp, delta_Pt, delta_Sn, delta_Pt_std, delta_Sn_std
+    """
+    if not STRUCTURE_LEVEL_LINDEMANN_FILE.exists():
+        print(f"  [WARNING] Structure-level文件不存在: {STRUCTURE_LEVEL_LINDEMANN_FILE}")
+        return None
+    
+    df = pd.read_csv(STRUCTURE_LEVEL_LINDEMANN_FILE, encoding='utf-8-sig')
+    
+    # 只保留需要的列
+    df_lindemann = df[['structure', 'temperature', 'delta_Pt', 'delta_Sn', 
+                       'delta_Pt_std', 'delta_Sn_std']].copy()
+    df_lindemann = df_lindemann.rename(columns={'temperature': 'temp'})
+    
+    print(f"  [OK] 读取structure-level Lindemann: {len(df_lindemann)} 条记录")
+    return df_lindemann
+
+
+def calculate_series_statistics(df, use_ensemble_D=True):
+    """
+    按系列(气相/负载/含氧)计算统计量
+    
+    参数:
+        df: 合并后的数据
+        use_ensemble_D: 是否使用系综平均计算D (推荐True)
+    """
+    print(f"\n[*] 计算分系列统计 (系综平均D: {use_ensemble_D})...")
     
     if 'series' not in df.columns:
         print("  [WARNING] 无系列分类信息")
@@ -494,19 +1024,30 @@ def calculate_series_statistics(df):
             for temp in sorted(elem_data['temp'].unique()):
                 temp_data = elem_data[elem_data['temp'] == temp]
                 
+                # 计算系综平均D
+                if use_ensemble_D:
+                    D_ensemble, D_std_runs, n_runs = calculate_ensemble_D(temp_data)
+                    D_mean = D_ensemble
+                    D_std = D_std_runs
+                else:
+                    D_mean = temp_data['D'].mean()
+                    D_std = temp_data['D'].std()
+                    n_runs = temp_data['full_path'].nunique() if 'full_path' in temp_data.columns else 1
+                
                 stats_list.append({
                     'series': series,
                     'element': element,
                     'temp': temp,
                     'n_atoms': len(temp_data),
                     'n_structures': temp_data['structure'].nunique(),
+                    'n_runs': n_runs,  # 新增
                     # δ 统计
                     'delta_mean': temp_data['delta'].mean(),
                     'delta_std': temp_data['delta'].std(),
                     'delta_median': temp_data['delta'].median(),
-                    # D 统计
-                    'D_mean': temp_data['D'].mean(),
-                    'D_std': temp_data['D'].std(),
+                    # D 统计 (系综平均)
+                    'D_mean': D_mean,
+                    'D_std': D_std,
                     'D_median': temp_data['D'].median(),
                     # 活性比例
                     'high_delta_ratio': (temp_data['delta'] > HIGH_LINDEMANN_THRESHOLD).mean(),
@@ -912,22 +1453,55 @@ def plot_element_comparison(df_stats, output_dir, structure=None):
         print("  [WARNING] 无数据可绘制")
         return
     
-    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    # 读取structure-level的Lindemann指数 (与Step 7.8.5一致)
+    df_lindemann = load_structure_level_lindemann()
+    if df_lindemann is not None and structure:
+        # 筛选相同结构
+        df_lindemann = df_lindemann[df_lindemann['structure'].str.contains(structure, case=False)]
+        print(f"  [INFO] 使用structure-level Lindemann数据 (系综平均方法)")
+    
+    # 改为3x2布局,添加e、f两个比值图
+    fig, axes = plt.subplots(3, 2, figsize=(14, 18))
     
     # ===== (1) δ mean vs Temperature =====
     ax1 = axes[0, 0]
-    for element in df_plot['element'].unique():
-        elem_data = df_plot[df_plot['element'] == element].sort_values('temp')
-        color = ELEMENT_COLORS.get(element, 'gray')
-        marker = ELEMENT_MARKERS.get(element, 'o')
-        
-        ax1.plot(elem_data['temp'], elem_data['delta_mean'],
-                marker=marker, color=color, linewidth=2, markersize=8,
-                label=element)
-        ax1.fill_between(elem_data['temp'],
-                        elem_data['delta_mean'] - elem_data['delta_std'],
-                        elem_data['delta_mean'] + elem_data['delta_std'],
-                        color=color, alpha=0.2)
+    
+    # 如果有structure_level数据,优先使用
+    if df_lindemann is not None and len(df_lindemann) > 0:
+        for element in ['Pt', 'Sn']:
+            if element == 'Pt':
+                temps = df_lindemann['temp'].values
+                delta_mean = df_lindemann['delta_Pt'].values
+                delta_std = df_lindemann['delta_Pt_std'].values
+            else:
+                temps = df_lindemann['temp'].values
+                delta_mean = df_lindemann['delta_Sn'].values
+                delta_std = df_lindemann['delta_Sn_std'].values
+            
+            color = ELEMENT_COLORS.get(element, 'gray')
+            marker = ELEMENT_MARKERS.get(element, 'o')
+            
+            ax1.plot(temps, delta_mean,
+                    marker=marker, color=color, linewidth=2, markersize=8,
+                    label=f'{element} (structure-level)')
+            ax1.fill_between(temps,
+                            delta_mean - delta_std,
+                            delta_mean + delta_std,
+                            color=color, alpha=0.2)
+    else:
+        # 降级使用per-atom平均
+        for element in df_plot['element'].unique():
+            elem_data = df_plot[df_plot['element'] == element].sort_values('temp')
+            color = ELEMENT_COLORS.get(element, 'gray')
+            marker = ELEMENT_MARKERS.get(element, 'o')
+            
+            ax1.plot(elem_data['temp'], elem_data['delta_mean'],
+                    marker=marker, color=color, linewidth=2, markersize=8,
+                    label=f'{element} (per-atom avg)')
+            ax1.fill_between(elem_data['temp'],
+                            elem_data['delta_mean'] - elem_data['delta_std'],
+                            elem_data['delta_mean'] + elem_data['delta_std'],
+                            color=color, alpha=0.2)
     
     ax1.axhline(HIGH_LINDEMANN_THRESHOLD, color='red', linestyle='--', alpha=0.5)
     ax1.set_xlabel('Temperature (K)', fontsize=12)
@@ -936,24 +1510,44 @@ def plot_element_comparison(df_stats, output_dir, structure=None):
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     
-    # ===== (2) D mean vs Temperature =====
+    # ===== (2) D mean vs Temperature (改进: 突出Pt vs Sn差异) =====
     ax2 = axes[0, 1]
     for element in df_plot['element'].unique():
         elem_data = df_plot[df_plot['element'] == element].sort_values('temp')
         color = ELEMENT_COLORS.get(element, 'gray')
         marker = ELEMENT_MARKERS.get(element, 'o')
         
+        # 绘制主线
         ax2.plot(elem_data['temp'], elem_data['D_mean'],
-                marker=marker, color=color, linewidth=2, markersize=8,
-                label=element)
+                marker=marker, color=color, linewidth=2.5, markersize=10,
+                label=element, zorder=3)
+        
+        # 添加误差带(使用D_std)
+        if 'D_std' in elem_data.columns:
+            ax2.fill_between(elem_data['temp'],
+                            elem_data['D_mean'] - elem_data['D_std'],
+                            elem_data['D_mean'] + elem_data['D_std'],
+                            color=color, alpha=0.15, zorder=1)
     
-    ax2.axhline(HIGH_D_THRESHOLD, color='blue', linestyle='--', alpha=0.5)
-    ax2.set_xlabel('Temperature (K)', fontsize=12)
-    ax2.set_ylabel('Mean D (10⁻⁵ cm²/s)', fontsize=12)
-    ax2.set_title('(b) D vs Temperature', fontsize=13, fontweight='bold')
-    ax2.legend()
+    # 不使用对数坐标,使用线性坐标以突出差异
+    ax2.set_xlabel('Temperature (K)', fontsize=13, fontweight='bold')
+    ax2.set_ylabel('Mean D (×10⁻⁵ cm²/s)', fontsize=13, fontweight='bold')
+    ax2.set_title('(b) Diffusion Coefficient vs Temperature\n(GMX Ensemble MSD Method)', 
+                  fontsize=14, fontweight='bold')
+    ax2.legend(fontsize=11)
+    ax2.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
+    
+    # 使用对数坐标Y轴 (模仿d图)
     ax2.set_yscale('log')
-    ax2.grid(True, alpha=0.3)
+    # 设置Y轴范围: 自动范围,留余量
+    y_min = df_plot['D_mean'].min() * 0.5
+    y_max = df_plot['D_mean'].max() * 2.0
+    ax2.set_ylim(y_min, y_max)
+    
+    # 添加文本说明
+    ax2.text(0.02, 0.98, 'Note: D calculation uses same method\n(no difference for structure-level vs per-atom)',
+            transform=ax2.transAxes, fontsize=9, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
     
     # ===== (3) High activity ratio vs Temperature =====
     ax3 = axes[1, 0]
@@ -973,31 +1567,207 @@ def plot_element_comparison(df_stats, output_dir, structure=None):
     ax3.grid(True, alpha=0.3)
     ax3.set_ylim(0, 105)
     
-    # ===== (4) δ-D correlation vs Temperature =====
+    # ===== (4) δ-D correlation (改进: Sn方块+Pt圆点,颜色深浅表温度) =====
     ax4 = axes[1, 1]
     
-    # 按结构-温度计算相关性
-    corr_data = []
-    for (struct, temp), group in df_plot.groupby(['structure', 'temp']):
-        # 需要从原始数据计算
-        pass
+    # 获取温度范围,用于颜色映射
+    temps = sorted(df_plot['temp'].unique())
+    temp_min = min(temps)
+    temp_max = max(temps)
     
-    # 简化：绘制 δ_mean vs D_mean 的关系
-    for element in df_plot['element'].unique():
-        elem_data = df_plot[df_plot['element'] == element]
-        color = ELEMENT_COLORS.get(element, 'gray')
-        marker = ELEMENT_MARKERS.get(element, 'o')
+    # 使用颜色映射 (冷色到暖色: 低温到高温)
+    from matplotlib.colors import Normalize
+    from matplotlib.cm import ScalarMappable
+    norm = Normalize(vmin=temp_min, vmax=temp_max)
+    cmap = plt.cm.RdYlBu_r  # 蓝色(冷)到红色(热)
+    
+    # 按元素绘制,使用不同marker
+    for element in sorted(df_plot['element'].unique()):
+        elem_data = df_plot[df_plot['element'] == element].sort_values('temp')
         
-        ax4.scatter(elem_data['delta_mean'], elem_data['D_mean'],
-                   c=color, marker=marker, s=80, alpha=0.7,
-                   label=element)
+        # Sn用方块,Pt用圆点
+        if element == 'Sn':
+            marker = 's'  # 方块
+            marker_size = 150
+        elif element == 'Pt':
+            marker = 'o'  # 圆点
+            marker_size = 150
+        else:
+            marker = '^'  # 三角形(其他元素)
+            marker_size = 120
+        
+        # 为每个温度点绘制不同颜色
+        for _, row in elem_data.iterrows():
+            temp = row['temp']
+            color = cmap(norm(temp))
+            
+            ax4.scatter(row['delta_mean'], row['D_mean'],
+                       c=[color], marker=marker, s=marker_size, 
+                       alpha=0.8, edgecolors='black', linewidths=1.5,
+                       zorder=3)
+    
+    # 添加图例 (元素类型)
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
+               markersize=10, label='Pt', markeredgecolor='black', markeredgewidth=1.5),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray',
+               markersize=10, label='Sn', markeredgecolor='black', markeredgewidth=1.5),
+    ]
+    ax4.legend(handles=legend_elements, loc='upper left', fontsize=11)
+    
+    # 添加颜色条 (温度)
+    sm = ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax4)
+    cbar.set_label('Temperature (K)', fontsize=11)
     
     ax4.set_xlabel('Mean Lindemann Index (δ)', fontsize=12)
     ax4.set_ylabel('Mean D (10⁻⁵ cm²/s)', fontsize=12)
-    ax4.set_title('(d) δ-D Correlation (Element Average)', fontsize=13, fontweight='bold')
-    ax4.legend()
+    ax4.set_title('(d) δ-D Correlation (color=T, shape=element)', fontsize=13, fontweight='bold')
     ax4.set_yscale('log')
-    ax4.grid(True, alpha=0.3)
+    ax4.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
+    
+    # ===== (e) Diffusion Coefficient Ratio (D_Sn/D_Pt) vs Temperature =====
+    ax5 = axes[2, 0]
+    
+    if 'Pt' in df_plot['element'].values and 'Sn' in df_plot['element'].values:
+        temps = sorted(df_plot['temp'].unique())
+        D_ratios = []
+        D_ratio_errors = []
+        
+        for temp in temps:
+            pt_data = df_plot[(df_plot['element']=='Pt') & (df_plot['temp']==temp)]
+            sn_data = df_plot[(df_plot['element']=='Sn') & (df_plot['temp']==temp)]
+            
+            if len(pt_data) > 0 and len(sn_data) > 0:
+                pt_D = pt_data['D_mean'].values[0]
+                sn_D = sn_data['D_mean'].values[0]
+                ratio = sn_D / pt_D
+                D_ratios.append(ratio)
+                
+                # 误差传播: ratio_error = ratio * sqrt((sn_std/sn_D)^2 + (pt_std/pt_D)^2)
+                if 'D_std' in pt_data.columns and 'D_std' in sn_data.columns:
+                    pt_std = pt_data['D_std'].values[0]
+                    sn_std = sn_data['D_std'].values[0]
+                    ratio_error = ratio * np.sqrt((sn_std/sn_D)**2 + (pt_std/pt_D)**2)
+                    D_ratio_errors.append(ratio_error)
+                else:
+                    D_ratio_errors.append(0)
+        
+        # 绘制比值曲线
+        ax5.errorbar(temps, D_ratios, yerr=D_ratio_errors,
+                    marker='o', color='purple', linewidth=2.5, markersize=10,
+                    capsize=5, capthick=2, label='D_Sn/D_Pt')
+        
+        # 添加参考线 y=1
+        ax5.axhline(y=1.0, color='gray', linestyle='--', linewidth=1.5, 
+                   label='Equal diffusion (ratio=1)', alpha=0.7)
+        
+        # 标注平均比值
+        mean_ratio = np.mean(D_ratios)
+        ax5.text(0.05, 0.95, f'Mean ratio = {mean_ratio:.3f}',
+                transform=ax5.transAxes, fontsize=12, fontweight='bold',
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    ax5.set_xlabel('Temperature (K)', fontsize=13, fontweight='bold')
+    ax5.set_ylabel('D_Sn / D_Pt', fontsize=13, fontweight='bold')
+    ax5.set_title('(e) Diffusion Coefficient Ratio vs Temperature', fontsize=14, fontweight='bold')
+    ax5.legend(fontsize=11)
+    ax5.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
+    ax5.set_ylim(0.8, max(D_ratios)*1.15 if D_ratios else 1.5)
+    
+    # ===== (f) Lindemann Index Ratio (δ_Pt/δ_Sn) vs Temperature =====
+    ax6 = axes[2, 1]
+    
+    # 优先使用structure_level数据计算比值
+    if df_lindemann is not None and len(df_lindemann) > 0:
+        temps = sorted(df_lindemann['temp'].unique())
+        delta_ratios = []
+        delta_ratio_errors = []
+        
+        for temp in temps:
+            temp_data = df_lindemann[df_lindemann['temp'] == temp]
+            if len(temp_data) > 0:
+                pt_delta = temp_data['delta_Pt'].values[0]
+                sn_delta = temp_data['delta_Sn'].values[0]
+                ratio = pt_delta / sn_delta  # Pt/Sn (Pt活性更高)
+                delta_ratios.append(ratio)
+                
+                # 误差传播
+                pt_std = temp_data['delta_Pt_std'].values[0]
+                sn_std = temp_data['delta_Sn_std'].values[0]
+                ratio_error = ratio * np.sqrt((pt_std/pt_delta)**2 + (sn_std/sn_delta)**2)
+                delta_ratio_errors.append(ratio_error)
+        
+        # 绘制比值曲线
+        ax6.errorbar(temps, delta_ratios, yerr=delta_ratio_errors,
+                    marker='s', color='teal', linewidth=2.5, markersize=10,
+                    capsize=5, capthick=2, label='δ_Pt/δ_Sn (structure-level)')
+        
+        # 添加参考线 y=1
+        ax6.axhline(y=1.0, color='gray', linestyle='--', linewidth=1.5,
+                   label='Equal mobility (ratio=1)', alpha=0.7)
+        
+        # 标注平均比值
+        mean_ratio = np.mean(delta_ratios)
+        ax6.text(0.05, 0.95, f'Mean ratio = {mean_ratio:.3f}',
+                transform=ax6.transAxes, fontsize=12, fontweight='bold',
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    
+    elif 'Pt' in df_plot['element'].values and 'Sn' in df_plot['element'].values:
+        # 降级使用per-atom平均数据
+        temps = sorted(df_plot['temp'].unique())
+        delta_ratios = []
+        delta_ratio_errors = []
+        
+        for temp in temps:
+            pt_data = df_plot[(df_plot['element']=='Pt') & (df_plot['temp']==temp)]
+            sn_data = df_plot[(df_plot['element']=='Sn') & (df_plot['temp']==temp)]
+            
+            if len(pt_data) > 0 and len(sn_data) > 0:
+                pt_delta = pt_data['delta_mean'].values[0]
+                sn_delta = sn_data['delta_mean'].values[0]
+                ratio = pt_delta / sn_delta  # 改为 Pt/Sn (Pt活性更高)
+                delta_ratios.append(ratio)
+                
+                # 误差传播
+                if 'delta_std' in pt_data.columns and 'delta_std' in sn_data.columns:
+                    pt_std = pt_data['delta_std'].values[0]
+                    sn_std = sn_data['delta_std'].values[0]
+                    ratio_error = ratio * np.sqrt((pt_std/pt_delta)**2 + (sn_std/sn_delta)**2)
+                    delta_ratio_errors.append(ratio_error)
+                else:
+                    delta_ratio_errors.append(0)
+        
+        # 绘制比值曲线
+        ax6.errorbar(temps, delta_ratios, yerr=delta_ratio_errors,
+                    marker='s', color='orange', linewidth=2.5, markersize=10,
+                    capsize=5, capthick=2, label='δ_Pt/δ_Sn (per-atom avg)')
+        
+        # 添加参考线 y=1
+        ax6.axhline(y=1.0, color='gray', linestyle='--', linewidth=1.5,
+                   label='Equal mobility (ratio=1)', alpha=0.7)
+        
+        # 标注平均比值
+        mean_ratio = np.mean(delta_ratios)
+        ax6.text(0.05, 0.95, f'Mean ratio = {mean_ratio:.3f}',
+                transform=ax6.transAxes, fontsize=12, fontweight='bold',
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    
+    ax6.set_xlabel('Temperature (K)', fontsize=13, fontweight='bold')
+    ax6.set_ylabel('δ_Pt / δ_Sn', fontsize=13, fontweight='bold')
+    ax6.set_title('(f) Lindemann Index Ratio vs Temperature', fontsize=14, fontweight='bold')
+    ax6.legend(fontsize=11)
+    ax6.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
+    # Pt活性更高,所以比值>1,范围调整为1.0-1.6
+    if delta_ratios:
+        ax6.set_ylim(1.0, max(delta_ratios)*1.1)
+    else:
+        ax6.set_ylim(1.0, 1.6)
     
     plt.tight_layout()
     
@@ -1595,12 +2365,23 @@ def main():
                        help='Lindemann数据目录')
     parser.add_argument('--msd-dir', type=str, default=None,
                        help='MSD数据目录')
+    parser.add_argument('--no-ensemble-D', action='store_true',
+                       help='不使用系综平均计算D (使用旧的直接平均方法)')
     
     args = parser.parse_args()
+    
+    # 确定是否使用系综平均D
+    use_ensemble_D = not args.no_ensemble_D
     
     print("=" * 80)
     print("Step 7.2: Per-Atom 动力学分析 - 林德曼指数 + 扩散系数")
     print("=" * 80)
+    print(f"\n计算方法:")
+    print(f"  扩散系数D: {'系综平均 (推荐)' if use_ensemble_D else '直接平均 (旧方法)'}")
+    if use_ensemble_D:
+        print(f"    - 先对每个run的原子D求平均")
+        print(f"    - 再对所有run的平均D求平均")
+        print(f"    - 更合理,考虑了run间的统计独立性")
     
     # 确定数据目录
     lindemann_dir = Path(args.lindemann_dir) if args.lindemann_dir else LINDEMANN_DIR
@@ -1634,14 +2415,108 @@ def main():
     df_merged.to_csv(merged_path, index=False, encoding='utf-8-sig')
     print(f"\n[SAVED] {merged_path}")
     
-    # 计算统计
-    df_stats = calculate_element_statistics(df_merged)
+    # ========== 输出详细数值 ==========
+    print("\n" + "=" * 80)
+    print("Per-Atom 数据详情")
+    print("=" * 80)
+    
+    # 按温度和元素汇总
+    for temp in sorted(df_merged['temp'].unique()):
+        temp_data = df_merged[df_merged['temp'] == temp]
+        print(f"\n【温度: {temp}K】")
+        
+        for element in sorted(temp_data['element'].unique()):
+            elem_data = temp_data[temp_data['element'] == element]
+            print(f"\n  {element} 元素 ({len(elem_data)} 个原子×run记录):")
+            print(f"    Lindemann Index (δ):")
+            print(f"      平均值: {elem_data['delta'].mean():.6f}")
+            print(f"      标准差: {elem_data['delta'].std():.6f}")
+            print(f"      中位数: {elem_data['delta'].median():.6f}")
+            print(f"      范围:   [{elem_data['delta'].min():.6f}, {elem_data['delta'].max():.6f}]")
+            
+            print(f"    Diffusion Coefficient (D, 10^-5 cm^2/s):")
+            print(f"      平均值: {elem_data['D'].mean():.6f}")
+            print(f"      标准差: {elem_data['D'].std():.6f}")
+            print(f"      中位数: {elem_data['D'].median():.6f}")
+            print(f"      范围:   [{elem_data['D'].min():.6f}, {elem_data['D'].max():.6f}]")
+            
+            # 相关性
+            if len(elem_data) >= 3:
+                r, p = stats.pearsonr(elem_data['delta'], elem_data['D'])
+                significance = "显著" if p < 0.05 else "不显著"
+                print(f"    δ-D 相关性: r = {r:.4f}, p = {p:.4f} ({significance})")
+        
+        # 元素间对比
+        pt_data = temp_data[temp_data['element'] == 'Pt']
+        sn_data = temp_data[temp_data['element'] == 'Sn']
+        if len(pt_data) > 0 and len(sn_data) > 0:
+            print(f"\n  【Pt vs Sn 对比】")
+            print(f"    D_Sn/D_Pt  = {sn_data['D'].mean() / pt_data['D'].mean():.4f}")
+            print(f"    δ_Sn/δ_Pt  = {sn_data['delta'].mean() / pt_data['delta'].mean():.4f}")
+    
+    print("\n" + "=" * 80)
+    
+    # 计算统计 (使用GMX ensemble MSD, 与step7_5一致)
+    df_stats = calculate_element_statistics(df_merged, use_ensemble_D=use_ensemble_D, use_gmx_msd=True)
     stats_path = OUTPUT_DIR / 'element_statistics.csv'
     df_stats.to_csv(stats_path, index=False, encoding='utf-8-sig')
-    print(f"[SAVED] {stats_path}")
+    print(f"\n[SAVED] {stats_path}")
+    
+    # ========== 输出拟合质量和变异系数 (CV & R²) ==========
+    if 'CV' in df_stats.columns and 'r2_mean' in df_stats.columns:
+        print("\n" + "=" * 80)
+        print("Element Statistics (GMX Ensemble MSD Method)")
+        print("=" * 80)
+        
+        for temp in sorted(df_stats['temp'].unique()):
+            temp_stats = df_stats[df_stats['temp'] == temp]
+            print(f"\n[{int(temp)}K]")
+            
+            for element in sorted(temp_stats['element'].unique()):
+                elem_stats = temp_stats[temp_stats['element'] == element]
+                if len(elem_stats) > 0:
+                    row = elem_stats.iloc[0]
+                    print(f"  {element}:")
+                    print(f"    D_mean = {row['D_mean']:.6f} +/- {row['D_std']:.6f} (x10^-5 cm^2/s)")
+                    print(f"    CV = {row['CV']:.2f}% (coefficient of variation)")
+                    print(f"    R^2 = {row['r2_mean']:.4f} (fit quality)")
+                    print(f"    n_runs = {int(row['n_runs'])}")
+            
+            # 对比
+            pt_stats = temp_stats[temp_stats['element'] == 'Pt']
+            sn_stats = temp_stats[temp_stats['element'] == 'Sn']
+            if len(pt_stats) > 0 and len(sn_stats) > 0:
+                pt = pt_stats.iloc[0]
+                sn = sn_stats.iloc[0]
+                print(f"\n  [Quality Assessment]")
+                
+                # CV 评价
+                if pt['CV'] < 5 and sn['CV'] < 5:
+                    cv_grade = "Excellent (CV<5%)"
+                elif pt['CV'] < 10 and sn['CV'] < 10:
+                    cv_grade = "Good (CV<10%)"
+                elif pt['CV'] < 20 and sn['CV'] < 20:
+                    cv_grade = "Fair (CV<20%)"
+                else:
+                    cv_grade = "WARNING: Poor (CV>=20%)"
+                
+                # R² 评价
+                if pt['r2_mean'] > 0.98 and sn['r2_mean'] > 0.98:
+                    r2_grade = "Excellent (R^2>0.98)"
+                elif pt['r2_mean'] > 0.95 and sn['r2_mean'] > 0.95:
+                    r2_grade = "Good (R^2>0.95)"
+                elif pt['r2_mean'] > 0.90 and sn['r2_mean'] > 0.90:
+                    r2_grade = "Fair (R^2>0.90)"
+                else:
+                    r2_grade = "WARNING: Poor (R^2<=0.90)"
+                
+                print(f"    CV: {cv_grade}")
+                print(f"    R^2: {r2_grade}")
+        
+        print("\n" + "=" * 80)
     
     # 计算分系列统计
-    df_series_stats = calculate_series_statistics(df_merged)
+    df_series_stats = calculate_series_statistics(df_merged, use_ensemble_D=use_ensemble_D)
     if df_series_stats is not None:
         series_stats_path = OUTPUT_DIR / 'series_statistics.csv'
         df_series_stats.to_csv(series_stats_path, index=False, encoding='utf-8-sig')

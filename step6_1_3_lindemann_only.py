@@ -131,7 +131,8 @@ def load_clustering_data(csv_path, exclude_dict=None):
 
 def plot_lindemann_single_fig(data, title, figsize=(10, 8), dpi=300, 
                               y_ticks=None, x_ticks=None, x_nticks=None, custom_partitions=None,
-                              show_average_line=False, show_error_bars=False, y_lim=None, hide_x_label=False):
+                              show_average_line=False, show_error_bars=False, y_lim=None, hide_x_label=False,
+                              partition_labels=None):
     """
     绘制单个系统的 Lindemann 指数图
     
@@ -148,13 +149,15 @@ def plot_lindemann_single_fig(data, title, figsize=(10, 8), dpi=300,
         show_error_bars: 是否显示误差棒
         y_lim: Y轴范围 (tuple): (y_min, y_max)
         hide_x_label: 是否隐藏X轴标签和刻度标签
+        partition_labels: 自定义分区图例名称列表，如 ['Solid', 'Liquid']
     """
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     
     plot_lindemann_single(ax, data, title, y_ticks=y_ticks, x_ticks=x_ticks,
                          x_nticks=x_nticks, custom_partitions=custom_partitions,
                          show_average_line=show_average_line, show_error_bars=show_error_bars,
-                         y_lim=y_lim, hide_x_label=hide_x_label)
+                         y_lim=y_lim, hide_x_label=hide_x_label,
+                         partition_labels=partition_labels)
     
     # 如果隐藏X轴，使用固定的subplot参数保持占位
     if hide_x_label:
@@ -167,7 +170,8 @@ def plot_lindemann_single_fig(data, title, figsize=(10, 8), dpi=300,
 
 
 def plot_lindemann_single(ax, df, title, y_ticks=None, x_ticks=None, x_nticks=None, custom_partitions=None,
-                         show_average_line=False, show_error_bars=False, y_lim=None, hide_x_label=False):
+                         show_average_line=False, show_error_bars=False, y_lim=None, hide_x_label=False,
+                         partition_labels=None):
     """绘制单个系统的 Lindemann 指数分布"""
     temps = sorted(df['temp'].unique())
     
@@ -190,7 +194,9 @@ def plot_lindemann_single(ax, df, title, y_ticks=None, x_ticks=None, x_nticks=No
                 phase_num = int(phase)
             
             color = PARTITION_COLORS.get(phase_num, '#999999')
-            label = f'Partition {phase_num}'
+            label = (partition_labels[phase_num - 1]
+                     if partition_labels and phase_num - 1 < len(partition_labels)
+                     else f'Partition {phase_num}')
             
             ax.scatter(df_phase['temp'], df_phase['delta'],
                       c=color, s=80, alpha=0.7, edgecolors='black', linewidth=0.5,
@@ -243,7 +249,9 @@ def plot_lindemann_single(ax, df, title, y_ticks=None, x_ticks=None, x_nticks=No
             all_phase_data[phase_num] = (temp_values, temp_means)
             
             color = PARTITION_COLORS.get(phase_num, '#999999')
-            label = f'Partition {phase_num}' if show_error_bars else None
+            label = (partition_labels[phase_num - 1]
+                     if partition_labels and phase_num - 1 < len(partition_labels)
+                     else f'Partition {phase_num}') if show_error_bars else None
             
             # 绘制分区内的平均值连线（用分区颜色，实线，实心标记点）
             ax.plot(temp_values, temp_means, 
@@ -421,6 +429,10 @@ def main():
                        help='sup86 自定义分区，格式: 200-400,500-1100')
     parser.add_argument('--exclude-sup86', nargs='+', metavar='TEMP:INDICES',
                        help='sup86 要排除的点，格式: "500K:0,1,2"')
+    parser.add_argument('--sup86-data-step', type=int, default=50, choices=[50, 100],
+                       help='sup86 使用的温度步长数据: 50 (默认,19个温度点) 或 100 (10个温度点)')
+    parser.add_argument('--partition-labels', type=str, metavar='NAME1,NAME2',
+                       help='自定义分区图例名称，逗号分隔，如 "Solid,Liquid" 或 "T<Tm,T>Tm"')
     
     args = parser.parse_args()
     
@@ -442,6 +454,12 @@ def main():
     y_ticks = parse_y_ticks(args.y_ticks)
     x_ticks = parse_x_ticks(args.x_ticks)
     x_nticks = args.x_nticks
+
+    # 解析分区标签
+    partition_labels = None
+    if args.partition_labels:
+        partition_labels = [s.strip() for s in args.partition_labels.split(',')]
+        print(f"  自定义分区标签: {partition_labels}")
     
     system_names = "Air68、Air86"
     if args.add_sup86:
@@ -453,7 +471,22 @@ def main():
     base_dir = Path('results/step6_1_clustering')
     csv_68 = base_dir / 'Air68_kmeans_n2_clustered_data.csv'
     csv_86 = base_dir / 'Air86_kmeans_n2_clustered_data.csv'
-    csv_sup86 = base_dir / 'Pt8sn6_kmeans_n2_clustered_data.csv' if args.add_sup86 else None
+    # 优先使用 lindemann-threshold 版本（50K步长，19个温度点）
+    # 若不存在则回退到 kmeans 版本（100K步长，10个温度点）
+    if args.add_sup86:
+        _sup86_50k = base_dir / 'Pt8Sn6_lindemann-threshold_n2_clustered_data.csv'
+        _sup86_100k = base_dir / 'Pt8sn6_kmeans_n2_clustered_data.csv'
+        if args.sup86_data_step == 100:
+            csv_sup86 = _sup86_100k
+            print("  [INFO] sup86 使用 100K步长数据 (kmeans, 由 --sup86-data-step 100 指定)")
+        elif _sup86_50k.exists():
+            csv_sup86 = _sup86_50k
+            print("  [INFO] sup86 使用 50K步长数据 (lindemann-threshold)")
+        else:
+            csv_sup86 = _sup86_100k
+            print("  [INFO] sup86 使用 100K步长数据 (kmeans) -- 50K文件不存在")
+    else:
+        csv_sup86 = None
     
     # 检查文件是否存在
     if not csv_68.exists():
@@ -538,7 +571,8 @@ def main():
                                         show_average_line=args.show_average_line,
                                         show_error_bars=args.show_error_bars,
                                         y_lim=y_lim,
-                                        hide_x_label=args.hide_x_label)
+                                        hide_x_label=args.hide_x_label,
+                                        partition_labels=partition_labels)
     
     output_file_68 = output_dir / 'Air68_lindemann.png'
     # 隐藏X轴时不使用tight，保持原始比例
@@ -558,7 +592,8 @@ def main():
                                         show_average_line=args.show_average_line,
                                         show_error_bars=args.show_error_bars,
                                         y_lim=y_lim,
-                                        hide_x_label=args.hide_x_label)
+                                        hide_x_label=args.hide_x_label,
+                                        partition_labels=partition_labels)
     
     output_file_86 = output_dir / 'Air86_lindemann.png'
     # 隐藏X轴时不使用tight，保持原始比例
@@ -579,7 +614,8 @@ def main():
                                             show_average_line=args.show_average_line,
                                             show_error_bars=args.show_error_bars,
                                             y_lim=y_lim,
-                                            hide_x_label=args.hide_x_label)
+                                            hide_x_label=args.hide_x_label,
+                                            partition_labels=partition_labels)
         
         output_file_sup86 = output_dir / 'sup86_lindemann.png'
         # 隐藏X轴时不使用tight，保持原始比例
